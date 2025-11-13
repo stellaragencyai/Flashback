@@ -22,14 +22,14 @@ Purpose:
 
 ENV EXPECTATIONS (matches your current .env):
 
-  # Main bot
+  # Main bot (already present)
   TG_TOKEN_MAIN=...
   TG_CHAT_MAIN=7776809236
   TG_LEVEL_MAIN=info      # optional: info | warn | error
 
-  # Subaccount bots
+  # Subaccount bots (you already have placeholder keys)
   TG_TOKEN_SUB_1=...
-  TG_CHAT_SUB_1=7776809236
+  TG_CHAT_SUB_1=...
   TG_LEVEL_SUB_1=info     # optional
 
   ...
@@ -44,11 +44,12 @@ Or separate chats per bot; the code doesn’t care.
 from __future__ import annotations
 
 import os
+import sys
 import time
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Deque, Optional
+from typing import Dict, Deque, Optional, List
 
 import requests
 from dotenv import load_dotenv
@@ -58,10 +59,33 @@ from dotenv import load_dotenv
 # ---------------------------------------------------------------------------
 
 THIS_FILE = Path(__file__).resolve()
-ROOT_DIR = THIS_FILE.parents[2]  # .../Flashback (project root)
+ROOT_DIR = THIS_FILE.parents[2]  # .../Flashback
 ENV_PATH = ROOT_DIR / ".env"
 
 load_dotenv(ENV_PATH)
+
+
+# ---------------------------------------------------------------------------
+# Safe printing for Windows consoles (no emoji explosions)
+# ---------------------------------------------------------------------------
+
+def _safe_print(text: str) -> None:
+    """
+    Print text in a way that won't crash on cp1252 consoles when emojis are present.
+    Non-encodable chars are replaced.
+    """
+    try:
+        # Try normal print first
+        print(text)
+    except UnicodeEncodeError:
+        # Fallback: encode with replacement and write via buffer
+        enc = sys.stdout.encoding or "utf-8"
+        try:
+            sys.stdout.buffer.write((text + "\n").encode(enc, errors="replace"))
+        except Exception:
+            # As a last resort, strip to ASCII-ish
+            ascii_only = text.encode("ascii", errors="replace").decode("ascii", errors="ignore")
+            print(ascii_only)
 
 
 # ---------------------------------------------------------------------------
@@ -69,8 +93,8 @@ load_dotenv(ENV_PATH)
 # ---------------------------------------------------------------------------
 
 # Rate limits (per notifier, i.e., per token+chat pair)
-TG_MAX_PER_30S = int(os.getenv("TG_MAX_PER_30S", "10"))    # msgs per 30 seconds
-TG_MAX_PER_300S = int(os.getenv("TG_MAX_PER_300S", "80"))  # msgs per 5 minutes
+TG_MAX_PER_30S = int(os.getenv("TG_MAX_PER_30S", "10"))   # msgs per 30 seconds
+TG_MAX_PER_300S = int(os.getenv("TG_MAX_PER_300S", "80")) # msgs per 5 minutes
 
 # Dedup window: identical text will not be sent more than once in this interval
 TG_DEDUP_WINDOW_SEC = int(os.getenv("TG_DEDUP_WINDOW_SEC", "30"))
@@ -160,10 +184,6 @@ class TelegramNotifier:
 
     # ---- Public API --------------------------------------------------------
 
-    @property
-    def enabled(self) -> bool:
-        return bool(self.token and self.chat_id)
-
     def info(self, text: str) -> None:
         self._send(text, level="info")
 
@@ -198,7 +218,7 @@ class TelegramNotifier:
           - 429-aware backoff
         """
         if not self.token or not self.chat_id:
-            print(f"[TG:{self.name}] No token/chat configured; skipping message.")
+            _safe_print(f"[TG:{self.name}] No token/chat configured; skipping message.")
             return
 
         level = _parse_level(level)
@@ -223,7 +243,7 @@ class TelegramNotifier:
         self._trim_rates(now)
 
         if len(rs.last_30s) >= TG_MAX_PER_30S or len(rs.last_300s) >= TG_MAX_PER_300S:
-            print(
+            _safe_print(
                 f"[TG:{self.name}] Rate limit hit; "
                 f"dropping message. last_30s={len(rs.last_30s)}, last_300s={len(rs.last_300s)}"
             )
@@ -238,13 +258,12 @@ class TelegramNotifier:
         payload = {
             "chat_id": self.chat_id,
             "text": text,
-            # you can add "disable_web_page_preview": True later if you want
         }
 
         try:
             resp = self._session.post(url, json=payload, timeout=TG_TIMEOUT_SEC)
         except Exception as e:
-            print(f"[TG:{self.name}] Exception: {type(e).__name__}: {e}")
+            _safe_print(f"[TG:{self.name}] Exception: {type(e).__name__}: {e}")
             return
 
         if resp.status_code == 429:
@@ -257,14 +276,14 @@ class TelegramNotifier:
                 pass
 
             rs.muted_until = time.time() + retry_after
-            print(
+            _safe_print(
                 f"[TG:{self.name}] 429 Too Many Requests. "
                 f"Muting for {retry_after} seconds."
             )
             return
 
         if not resp.ok:
-            print(f"[TG:{self.name}] HTTP {resp.status_code} error: {resp.text!r}")
+            _safe_print(f"[TG:{self.name}] HTTP {resp.status_code} error: {resp.text!r}")
 
     def _trim_rates(self, now: float) -> None:
         """Trim old timestamps from rate deques."""
@@ -312,8 +331,8 @@ def _load_channel_config(name: str) -> TelegramNotifier:
         min_level=level,
     )
 
-    token_hint = (token[:8] + "…") if token else "None"
-    print(
+    token_hint = (token[:8] + "...") if token else "None"
+    _safe_print(
         f"[TG:init] channel={name!r}, token_present={bool(token)}, "
         f"token_prefix={token_hint}, chat_id={chat_id!r}, level={level}"
     )
@@ -344,40 +363,25 @@ def get_notifier(name: str = "main") -> TelegramNotifier:
 
 
 # ---------------------------------------------------------------------------
-# Startup wiring summary (so you stop guessing)
+# Optional: startup summary (now safe for lame consoles)
 # ---------------------------------------------------------------------------
 
 def _startup_summary() -> None:
     """
-    Build and print a wiring summary, and send it once via main (if main enabled).
-
-    Status legend:
-      ✅ ok        -> token + chat configured
-      ⚪ disabled  -> neither token nor chat set (intentionally off)
-      ⛔ partial   -> one is set, one is missing (this is a misconfig)
+    Print a short summary of which channels have tokens configured.
+    No emojis, so Windows doesn't have a meltdown.
     """
-    lines = []
-    for name in CHANNEL_ENV_KEYS.keys():
-        n = get_notifier(name)
-        has_token = bool(n.token)
-        has_chat = bool(n.chat_id)
-
-        if has_token and has_chat:
-            status = "✅ ok"
-        elif not has_token and not has_chat:
-            status = "⚪ disabled"
-        else:
-            status = "⛔ partial"
-
-        lines.append(f"{status}  {name}")
-
-    summary = "Flashback Notifier wiring:\n" + "\n".join(lines)
-    print(summary)
-
-    main = get_notifier("main")
-    if main.enabled:
-        main.info(summary)
+    lines: List[str] = []
+    lines.append("Telegram notifier startup summary:")
+    for name, keys in CHANNEL_ENV_KEYS.items():
+        token_key = keys["token"]
+        chat_key = keys["chat"]
+        token = os.getenv(token_key, "")
+        chat_id = os.getenv(chat_key, "")
+        status = "OK" if token and chat_id else "MISSING"
+        lines.append(f"  - {name}: {status} (token_key={token_key}, chat_key={chat_key})")
+    summary = "\n".join(lines)
+    _safe_print(summary)
 
 
-# Run once on import
 _startup_summary()
