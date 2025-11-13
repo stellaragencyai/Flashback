@@ -1,0 +1,85 @@
+{
+  "round_robin_enabled": true,
+  "subs": [
+    {
+      "label": "Flashback01",
+      "uid": "524630315",
+      "api_key": "q0G9rxUkRrBVaFQKBD",
+      "api_secret": "hpnMtmjxiKD4605V0FEn7zYhC5qWCHETYMuP",
+      "tg_token": "8058666528:AAEJ64UapZozB8D-OKQ6mpRNQnxSmx9GO00",
+      "tg_chat": "7776809236"
+    },
+    {
+      "label": "Flashback02",
+      "uid": "524633243",
+      "api_key": "i4eURyiUFsvoYeL41k",
+      "api_secret": "9bWFEOg5uiOq3diB1tCQfPFQdkEr25syCBQJ",
+      "tg_token": "8549461063:AAGTjm-OeTbgRVRoD_U-E-FJ-UMtpAHZdDQ",
+      "tg_chat": "7776809236"
+    },
+    {
+      "label": "Flashback03",
+      "uid": "524634622",
+      "api_key": "fvc3xqeexD5y3vzD68",
+      "api_secret": "85PaPFBOtkKMizjlwCUwW6ZFgHlaONWeDTMo",
+      "tg_token": "8555580562:AAF1Cy2rTO_-LLYZpWly3KU2DRcI9shgZEI",
+      "tg_chat": "7776809236"
+    },
+    {
+      "label": "Flashback04",
+      "uid": "524636309",
+      "api_key": "rxJrdJhG0w4SFKghdI",
+      "api_secret": "NRntSVjN3lE6FLC075jtr3a82F5grYvap1hi",
+      "tg_token": "8002753861:AAGGaRgyEmbsxaFgGcw3_Us1orNrGtYTSNA",
+      "tg_chat": "7776809236"
+    },
+    {
+      "label": "Flashback05",
+      "uid": "524637467",
+      "api_key": "FdDkmWSdocARVGfVmv",
+      "api_secret": "zZyiLpGtTvhe7J39vzBS3Qy201eShG3uYqTp",
+      "tg_token": "8354159919:AAErSYh-QzSdl27g1KYgUX8hU7RN-AgYoEk",
+      "tg_chat": "7776809236"
+    },
+    {
+      "label": "Flashback06",
+      "uid": "524638768",
+      "api_key": "QJC8F30tvcfS1pUDUW",
+      "api_secret": "kdnhL4TjpPcImdTB2G1lACk8wLusJeSovI1P",
+      "tg_token": "8502363309:AAFJydwc_-NguOjD8g_P4Ur--5UQ-rhAUM8",
+      "tg_chat": "7776809236"
+    },
+    {
+      "label": "Flashback07",
+      "uid": "524649709",
+      "api_key": "g5pTM2qgYD1ILy1QED",
+      "api_secret": "UsQsUvsEyxrieHa9z8pMfFvlPinuvOfTjXl1",
+      "tg_token": "8526161913:AAE-krPLAotQWeW-lNsbXDdm7PloiwDX1jQ",
+      "tg_chat": "7776809236"
+    },
+    {
+      "label": "Flashback08",
+      "uid": "524650929",
+      "api_key": "fDzPNKEHPF15GG1wlp",
+      "api_secret": "zhAJwY7Eq6vWXoKUVMXsbVNP846IJokav7mF",
+      "tg_token": "8498733866:AAGwk0ZVhiKwJDfuepgCIGlaUPdb5I70G74",
+      "tg_chat": "7776809236"
+    },
+    {
+      "label": "Flashback09",
+      "uid": "524693375",
+      "api_key": "ke9SakrJHDjLG91uJI",
+      "api_secret": "3pFtp9xeCbhlfT2NNLOW9rF6lYG2vTl2BPss",
+      "tg_token": "8513306014:AAEWPAj3E_TvUNLKiFFfTEUUAV37gANz82M",
+      "tg_chat": "7776809236"
+    },
+    {
+      "label": "Flashback10",
+      "uid": "524700541",
+      "api_key": "Hh1VqnOMl5JPqZV8qx",
+      "api_secret": "iMp61GDlOdmm51poMDtpXfKFQkDlNYTI1kqC",
+      "tg_token": "8528083365:AAHxKy2vy9xZ0uMtpd30kYjjDZaArTFS3Rc",
+      "tg_chat": "7776809236"
+    }
+  ]
+}
