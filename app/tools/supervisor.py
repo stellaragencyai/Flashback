@@ -317,7 +317,7 @@ def start(mod: str) -> subprocess.Popen:
     log_dir.mkdir(exist_ok=True)
     log_path = log_dir / f"{mod.replace('.', '_')}.log"
 
-    print(f"▶ Starting {mod}")
+    print(f"[START] {mod}")
     send_tg(f"✅ Bot started: {mod.split('.')[-1]} is now running.")
 
     # Use ROOT_DIR as the working directory so imports and paths are stable
@@ -331,7 +331,7 @@ def start(mod: str) -> subprocess.Popen:
 
 def stop_all() -> None:
     """Stop all bots when exiting."""
-    print("\n🛑 Stopping all bots...")
+    print("\n[STOP] Stopping all bots...")
     send_tg("🛑 All Flashback bots are stopping now.")
     for m, p in procs.items():
         with contextlib.suppress(Exception):
@@ -343,7 +343,7 @@ def stop_all() -> None:
             if p.poll() is None:
                 p.kill()
     send_tg("✅ All bots stopped successfully.")
-    print("✅ All bots stopped successfully.")
+    print("[STOP] All bots stopped successfully.")
 
 # ---------- MAIN LOOP ----------
 
