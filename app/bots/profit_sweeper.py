@@ -1,5 +1,5 @@
 # app/bots/profit_sweeper.py
-# Flashback — Profit Sweeper (Main, upgraded)
+# Flashback — Profit Sweeper (Main, hardened)
 #
 # What it does
 # - At your daily cutoff (London time), compute today's realized PnL (USDT) on the main account.
@@ -16,13 +16,13 @@
 #       • Stores the last swept London-date to avoid double runs.
 #       • Stores a persistent subaccount round-robin index.
 #
-# Enhancements vs previous version:
-#   1) Uses central notifier (get_notifier("main")) instead of raw send_tg.
-#   2) Fixes SUBS distribution bug (no more over-sending) and persists RR index.
-#   3) Adds cursor pagination for closed PnL (handles >200 entries/day).
-#   4) Safer Decimal handling around MAIN_BAL_FLOOR_USD and DRIP_MIN_USD.
+# Extra hardening:
+#   - Robust SWEEP_ALLOCATION parsing (skips bad chunks, fallback default).
+#   - Defensive cutoff/timezone handling.
+#   - Full traceback logging on unexpected exceptions.
 
 import time
+import traceback
 from decimal import Decimal, ROUND_DOWN
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -79,8 +79,17 @@ def _save_state(state: dict) -> None:
     STATE_PATH.write_bytes(orjson.dumps(state))
 
 
+def _get_tz():
+    try:
+        return pytz.timezone(SWEEP_CUTOFF_TZ)
+    except Exception:
+        # Fallback so a bad TZ doesn't kill the bot
+        tg.warn(f"[Sweeper] Invalid SWEEP_CUTOFF_TZ={SWEEP_CUTOFF_TZ!r}, falling back to UTC.")
+        return pytz.UTC
+
+
 def _london_now() -> datetime:
-    tz = pytz.timezone(SWEEP_CUTOFF_TZ)
+    tz = _get_tz()
     return datetime.now(tz)
 
 
@@ -88,7 +97,7 @@ def _london_day_bounds(d: datetime) -> Tuple[int, int]:
     """
     Start/end of the current London day in ms epoch.
     """
-    tz = pytz.timezone(SWEEP_CUTOFF_TZ)
+    tz = _get_tz()
     start = tz.localize(datetime(d.year, d.month, d.day, 0, 0, 0))
     end = start + timedelta(days=1)
     return int(start.timestamp() * 1000), int(end.timestamp() * 1000)
@@ -99,7 +108,12 @@ def _is_cutoff_window(now: datetime) -> bool:
     True when local London time is >= cutoff HH:MM and < cutoff + 2 minutes.
     This gives us a small window to fire once per day.
     """
-    hh, mm = [int(x) for x in SWEEP_CUTOFF_HHMM.split(":")]
+    try:
+        hh, mm = [int(x) for x in SWEEP_CUTOFF_HHMM.split(":")]
+    except Exception:
+        tg.warn(f"[Sweeper] Invalid SWEEP_CUTOFF_HHMM={SWEEP_CUTOFF_HHMM!r}, using 23:59 fallback.")
+        hh, mm = 23, 59
+
     cutoff = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
     return (now >= cutoff) and (now < cutoff + timedelta(minutes=2))
 
@@ -187,14 +201,40 @@ def _transfer_unified_to_funding_usdt(amount: Decimal) -> bool:
 def _parse_allocation(spec: str) -> List[Tuple[Decimal, str]]:
     """
     "60:MAIN,25:FUNDING,15:SUBS" -> [(60, 'MAIN'), (25, 'FUNDING'), (15, 'SUBS')]
+
+    Robust:
+      - Ignores malformed chunks (no colon, bad decimal).
+      - If nothing valid, falls back to 75:MAIN,10:FUNDING,15:SUBS.
     """
     parts: List[Tuple[Decimal, str]] = []
-    for item in spec.split(","):
-        item = item.strip()
+    for raw in spec.split(","):
+        item = raw.strip()
         if not item:
             continue
-        pct_str, dest = item.split(":")
-        parts.append((Decimal(pct_str), dest.strip().upper()))
+        if ":" not in item:
+            tg.warn(f"[Sweeper] Bad allocation item (no colon): {item!r}, skipping.")
+            continue
+        pct_str, dest = item.split(":", 1)
+        try:
+            pct = Decimal(pct_str)
+        except Exception:
+            tg.warn(f"[Sweeper] Bad allocation percent {pct_str!r} in {item!r}, skipping.")
+            continue
+        dest = dest.strip().upper()
+        if not dest:
+            tg.warn(f"[Sweeper] Empty destination in {item!r}, skipping.")
+            continue
+        parts.append((pct, dest))
+
+    # Fallback if everything was garbage
+    if not parts:
+        tg.error(f"[Sweeper] SWEEP_ALLOCATION={spec!r} produced no valid parts; using fallback 75:MAIN,10:FUNDING,15:SUBS.")
+        parts = [
+            (Decimal("75"), "MAIN"),
+            (Decimal("10"), "FUNDING"),
+            (Decimal("15"), "SUBS"),
+        ]
+
     tot = sum(p for p, _ in parts)
     if tot != Decimal("100"):
         tg.warn(f"[Sweeper] Allocation totals {tot}%, not 100%. Proceeding anyway.")
@@ -335,7 +375,8 @@ def loop():
                 time.sleep(POLL_SECONDS)
 
         except Exception as e:
-            tg.error(f"[Sweeper] {e}")
+            tb = traceback.format_exc()
+            tg.error(f"[Sweeper] Unhandled error: {e}\n{tb}")
             time.sleep(10)
 
 

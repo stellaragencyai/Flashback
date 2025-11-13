@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Flashback — Supervisor v3 (Root-aware + Subaccount Status)
+# Flashback — Supervisor v4 (Root-aware + Subaccount Status + Central Notifier)
 #
 # What this does:
 # - Forces project root as working directory so imports and .env are consistent.
@@ -11,12 +11,19 @@
 # - Logs each bot's stdout/stderr to app/logs/*.log
 # - Sends Telegram alerts on bot start/crash + periodic heartbeat.
 #
-# Expected .env keys:
+# Expected .env keys (with some fallbacks):
+#
 #   BYBIT_BASE=https://api.bybit.com   (optional; defaults to mainnet)
 #
+#   # Preferred:
 #   BYBIT_MAIN_API_KEY=...
 #   BYBIT_MAIN_API_SECRET=...
 #
+#   # Fallbacks for MAIN (if above not set):
+#   BYBIT_MAIN_READ_KEY=...
+#   BYBIT_MAIN_READ_SECRET=...
+#
+#   # Subaccounts (optional until you wire them):
 #   BYBIT_FLASHBACK01_API_KEY=...
 #   BYBIT_FLASHBACK01_API_SECRET=...
 #   ...
@@ -25,6 +32,9 @@
 #
 #   TG_TOKEN_MAIN=...
 #   TG_CHAT_MAIN=...
+#
+#   # Optional:
+#   SUPERVISOR_HEARTBEAT_SEC=300
 
 import subprocess
 import time
@@ -39,6 +49,8 @@ import hmac
 import hashlib
 import requests
 from dotenv import load_dotenv
+
+from app.core.notifier_bot import get_notifier
 
 # ---------- PATHS & ENV ----------
 
@@ -55,29 +67,26 @@ os.chdir(ROOT_DIR)
 ENV_PATH = ROOT_DIR / ".env"
 load_dotenv(dotenv_path=ENV_PATH)
 
-TG_TOKEN = os.getenv("TG_TOKEN_MAIN", "")
-TG_CHAT_ID = os.getenv("TG_CHAT_MAIN", "")
-
 BYBIT_BASE = os.getenv("BYBIT_BASE", "https://api.bybit.com").rstrip("/")
 
-# Supervisor heartbeat interval (seconds)
-HEARTBEAT_INTERVAL = 300  # 5 minutes
+# Supervisor heartbeat interval (seconds), overridable via env
+HEARTBEAT_INTERVAL = int(os.getenv("SUPERVISOR_HEARTBEAT_SEC", "300"))
+
+# Central notifier
+tg = get_notifier("main")
 
 # ---------- TELEGRAM HELPERS ----------
 
 def send_tg(msg: str) -> None:
-    """Send a Telegram message (safe, won’t crash if Telegram fails)."""
-    if not TG_TOKEN or not TG_CHAT_ID:
+    """
+    Send a Telegram message via the central notifier.
+    Safe: will not crash supervisor if Telegram fails or is misconfigured.
+    """
+    if not tg.enabled:
+        # Still print locally so you see *something* in logs
+        print(f"[SUPERVISOR][TG disabled] {msg}")
         return
-    try:
-        requests.post(
-            f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
-            json={"chat_id": TG_CHAT_ID, "text": msg},
-            timeout=6,
-        )
-    except Exception:
-        # Supervisor should never die because Telegram is moody
-        pass
+    tg.info(msg)
 
 # ---------- BYBIT AUTH & SUBACCOUNT CHECKS ----------
 
@@ -95,7 +104,6 @@ def _bybit_signed_get(
     Signature rule (v5 GET):
       sign = HMAC_SHA256(secret, timestamp + api_key + recv_window + queryString)
       queryString is the URL-encoded query in key-sorted order: k1=v1&k2=v2...
-    Docs: https://bybit-exchange.github.io/docs/v5/guide
     """
     ts = str(int(time.time() * 1000))
     recv_window = "5000"
@@ -126,12 +134,25 @@ def _bybit_signed_get(
 def _load_subaccount_creds(prefix: str) -> Tuple[Optional[str], Optional[str]]:
     """
     Load key/secret from env using the given prefix.
+
     Example: prefix="BYBIT_FLASHBACK01" ->
          BYBIT_FLASHBACK01_API_KEY
          BYBIT_FLASHBACK01_API_SECRET
+
+    For MAIN, also supports your existing naming pattern:
+        BYBIT_MAIN_READ_KEY / BYBIT_MAIN_READ_SECRET
+        BYBIT_MAIN_TRADE_KEY / BYBIT_MAIN_TRADE_SECRET
     """
     key = os.getenv(f"{prefix}_API_KEY")
     secret = os.getenv(f"{prefix}_API_SECRET")
+
+    if prefix == "BYBIT_MAIN":
+        # Fallbacks if the *_API_* variant is not set
+        if not key:
+            key = os.getenv("BYBIT_MAIN_READ_KEY") or os.getenv("BYBIT_MAIN_TRADE_KEY")
+        if not secret:
+            secret = os.getenv("BYBIT_MAIN_READ_SECRET") or os.getenv("BYBIT_MAIN_TRADE_SECRET")
+
     return key, secret
 
 
@@ -149,7 +170,7 @@ def check_subaccount(label: str, prefix: str) -> Dict[str, str]:
             "prefix": prefix,
             "status": "MISSING_CREDS",
             "equity": "",
-            "detail": "missing API_KEY / API_SECRET in .env",
+            "detail": "missing API_KEY / API_SECRET in .env (or MAIN_READ/TRADE_* for MAIN)",
         }
 
     try:
@@ -329,8 +350,9 @@ def stop_all() -> None:
 def main() -> None:
     print(f"Project root: {ROOT_DIR}")
     print(f"Using .env:   {ENV_PATH} (exists={ENV_PATH.exists()})")
-    print(f"TG configured: {'yes' if TG_TOKEN and TG_CHAT_ID else 'no'}")
+    print(f"TG configured: {'yes' if tg.enabled else 'no'}")
     print(f"Bybit base:   {BYBIT_BASE}")
+    print(f"Heartbeat:    {HEARTBEAT_INTERVAL} sec")
 
     # 1) Subaccount status check + boot report
     try:
