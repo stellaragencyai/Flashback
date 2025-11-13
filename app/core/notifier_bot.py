@@ -22,14 +22,14 @@ Purpose:
 
 ENV EXPECTATIONS (matches your current .env):
 
-  # Main bot (already present)
-  TG_TOKEN_MAIN=8567...QNLc
+  # Main bot
+  TG_TOKEN_MAIN=...
   TG_CHAT_MAIN=7776809236
   TG_LEVEL_MAIN=info      # optional: info | warn | error
 
-  # Subaccount bots (you already have placeholder keys)
-  TG_TOKEN_SUB_1=YOUR_TG_TOKEN_SUB1
-  TG_CHAT_SUB_1=YOUR_CHAT_ID_SUB1
+  # Subaccount bots
+  TG_TOKEN_SUB_1=...
+  TG_CHAT_SUB_1=7776809236
   TG_LEVEL_SUB_1=info     # optional
 
   ...
@@ -58,7 +58,7 @@ from dotenv import load_dotenv
 # ---------------------------------------------------------------------------
 
 THIS_FILE = Path(__file__).resolve()
-ROOT_DIR = THIS_FILE.parents[2]  # .../Flashback
+ROOT_DIR = THIS_FILE.parents[2]  # .../Flashback (project root)
 ENV_PATH = ROOT_DIR / ".env"
 
 load_dotenv(ENV_PATH)
@@ -69,8 +69,8 @@ load_dotenv(ENV_PATH)
 # ---------------------------------------------------------------------------
 
 # Rate limits (per notifier, i.e., per token+chat pair)
-TG_MAX_PER_30S = int(os.getenv("TG_MAX_PER_30S", "10"))   # msgs per 30 seconds
-TG_MAX_PER_300S = int(os.getenv("TG_MAX_PER_300S", "80")) # msgs per 5 minutes
+TG_MAX_PER_30S = int(os.getenv("TG_MAX_PER_30S", "10"))    # msgs per 30 seconds
+TG_MAX_PER_300S = int(os.getenv("TG_MAX_PER_300S", "80"))  # msgs per 5 minutes
 
 # Dedup window: identical text will not be sent more than once in this interval
 TG_DEDUP_WINDOW_SEC = int(os.getenv("TG_DEDUP_WINDOW_SEC", "30"))
@@ -160,6 +160,10 @@ class TelegramNotifier:
 
     # ---- Public API --------------------------------------------------------
 
+    @property
+    def enabled(self) -> bool:
+        return bool(self.token and self.chat_id)
+
     def info(self, text: str) -> None:
         self._send(text, level="info")
 
@@ -234,6 +238,7 @@ class TelegramNotifier:
         payload = {
             "chat_id": self.chat_id,
             "text": text,
+            # you can add "disable_web_page_preview": True later if you want
         }
 
         try:
@@ -336,3 +341,43 @@ def get_notifier(name: str = "main") -> TelegramNotifier:
     notifier = _load_channel_config(name)
     _NOTIFIERS[name] = notifier
     return notifier
+
+
+# ---------------------------------------------------------------------------
+# Startup wiring summary (so you stop guessing)
+# ---------------------------------------------------------------------------
+
+def _startup_summary() -> None:
+    """
+    Build and print a wiring summary, and send it once via main (if main enabled).
+
+    Status legend:
+      ✅ ok        -> token + chat configured
+      ⚪ disabled  -> neither token nor chat set (intentionally off)
+      ⛔ partial   -> one is set, one is missing (this is a misconfig)
+    """
+    lines = []
+    for name in CHANNEL_ENV_KEYS.keys():
+        n = get_notifier(name)
+        has_token = bool(n.token)
+        has_chat = bool(n.chat_id)
+
+        if has_token and has_chat:
+            status = "✅ ok"
+        elif not has_token and not has_chat:
+            status = "⚪ disabled"
+        else:
+            status = "⛔ partial"
+
+        lines.append(f"{status}  {name}")
+
+    summary = "Flashback Notifier wiring:\n" + "\n".join(lines)
+    print(summary)
+
+    main = get_notifier("main")
+    if main.enabled:
+        main.info(summary)
+
+
+# Run once on import
+_startup_summary()

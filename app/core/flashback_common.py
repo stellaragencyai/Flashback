@@ -8,6 +8,7 @@ import hashlib
 import threading
 from decimal import Decimal, ROUND_DOWN
 from typing import Dict, Any, Tuple, List, Optional, Callable
+from urllib.parse import urlencode
 
 import requests
 import orjson
@@ -27,7 +28,7 @@ SEC_TRADE  = os.getenv("BYBIT_MAIN_TRADE_SECRET", "")
 KEY_XFER   = os.getenv("BYBIT_MAIN_TRANSFER_KEY", "")
 SEC_XFER   = os.getenv("BYBIT_MAIN_TRANSFER_SECRET", "")
 
-# Telegram
+# Telegram (legacy basic sender; high-volume bots should use notifier_bot)
 TG_TOKEN_MAIN   = os.getenv("TG_TOKEN_MAIN", "")
 TG_CHAT_MAIN    = os.getenv("TG_CHAT_MAIN", "")
 TG_TOKEN_NOTIF  = os.getenv("TG_TOKEN_NOTIF", TG_TOKEN_MAIN)
@@ -83,7 +84,7 @@ SWEEP_CUTOFF_HHMM    = os.getenv("SWEEP_CUTOFF_HHMM", "23:59")
 HTTP_TIMEOUT   = float(os.getenv("HTTP_TIMEOUT", "12"))
 RETRY_BACKOFFS = [0.5, 1.0, 2.0]  # seconds
 
-# --------- Telegram ----------
+# --------- Telegram (legacy simple sender) ----------
 def send_tg(text: str, main: bool = False) -> None:
     token = TG_TOKEN_MAIN if main else TG_TOKEN_NOTIF
     chat  = TG_CHAT_MAIN  if main else TG_CHAT_NOTIF
@@ -143,8 +144,8 @@ def _sign(secret: str, payload: str) -> str:
 
 def _headers(key: str, secret: str, *, query: str = "", body: str = "") -> Dict[str, str]:
     """
-    Bybit v5 HMAC: sign (timestamp + api_key + recv_window + (body or query))
-    Must include X-BAPI-SIGN-TYPE: 2
+    Bybit v5 HMAC: sign (timestamp + api_key + recv_window + (body or query)).
+    NOTE: `query` must already be a URL-encoded query string, e.g. "a=1&cursor=foo%253Abar".
     """
     ts = _ts()
     rw = "20000"  # 20s cushion
@@ -159,11 +160,6 @@ def _headers(key: str, secret: str, *, query: str = "", body: str = "") -> Dict[
         "Content-Type": "application/json",
     }
 
-def _sorted_qs(params: Dict[str, Any]) -> str:
-    if not params:
-        return ""
-    return "&".join(f"{k}={params[k]}" for k in sorted(params))
-
 def _check_json_ok(resp_json: Dict[str, Any], url: str) -> Dict[str, Any]:
     if "retCode" in resp_json:
         code = resp_json.get("retCode", 0)
@@ -173,7 +169,11 @@ def _check_json_ok(resp_json: Dict[str, Any], url: str) -> Dict[str, Any]:
     return resp_json
 
 def _with_retries(fn: Callable[[], requests.Response]) -> requests.Response:
-    last_exc = None
+    """
+    Generic HTTP retry wrapper.
+    Also detects Bybit retCode 10002 (time not synced) in JSON and triggers sync_time().
+    """
+    last_exc: Optional[Exception] = None
     for i, backoff in enumerate([0.0] + RETRY_BACKOFFS):
         if backoff:
             time.sleep(backoff)
@@ -182,6 +182,7 @@ def _with_retries(fn: Callable[[], requests.Response]) -> requests.Response:
             try:
                 js = r.json()
                 if isinstance(js, dict) and js.get("retCode") == 10002:
+                    # Server says time out-of-sync; sync and retry
                     sync_time(True)
                     continue
             except Exception:
@@ -203,56 +204,82 @@ def _with_retries(fn: Callable[[], requests.Response]) -> requests.Response:
         raise last_exc
     raise RuntimeError("request failed without exception (unexpected)")
 
+# --------- Bybit GET/POST with correct v5 signing ----------
+
 def bybit_get(path: str,
               params: Optional[Dict[str, Any]] = None,
               key: str = KEY_READ,
               secret: str = SEC_READ,
               auth: bool = True) -> Dict[str, Any]:
+    """
+    Authenticated GET:
+      - builds URL-encoded query string via urlencode(sorted(params.items()))
+      - uses that exact string in both the URL and the signature payload.
+    This avoids signature mismatches with things like double-encoded cursors.
+    """
     params = params or {}
+
     # Guard: if linear category but missing required discriminator, default settleCoin
     if params.get("category") == "linear" and not any(k in params for k in ("symbol", "settleCoin", "baseCoin")):
         params["settleCoin"] = "USDT"
-    url = BYBIT_BASE + path
+
     if auth:
-        qs = _sorted_qs(params)
-        headers = _headers(key, secret, query=qs)
-        r = _with_retries(lambda: requests.get(url, params=params, headers=headers, timeout=HTTP_TIMEOUT))
+        url_holder: Dict[str, str] = {"url": BYBIT_BASE + path}
+
+        def _call() -> requests.Response:
+            # Build query string once, URL-encoded, sorted
+            if params:
+                qs = urlencode(sorted(params.items()))
+                url = f"{BYBIT_BASE}{path}?{qs}"
+            else:
+                qs = ""
+                url = f"{BYBIT_BASE}{path}"
+            url_holder["url"] = url
+            headers = _headers(key, secret, query=qs)
+            return requests.get(url, headers=headers, timeout=HTTP_TIMEOUT)
+
+        r = _with_retries(_call)
+        url_used = url_holder["url"]
     else:
-        r = _with_retries(lambda: requests.get(url, params=params, timeout=HTTP_TIMEOUT))
+        def _call_no_auth() -> requests.Response:
+            return requests.get(f"{BYBIT_BASE}{path}", params=params, timeout=HTTP_TIMEOUT)
+
+        r = _with_retries(_call_no_auth)
+        url_used = f"{BYBIT_BASE}{path}"
+
     try:
         js = r.json()
     except Exception:
-        raise requests.HTTPError(f"Non-JSON response from Bybit: {url}")
-    if isinstance(js, dict) and js.get("retCode") == 10002:
-        sync_time(True)
-        headers = _headers(key, secret, query=_sorted_qs(params)) if auth else None
-        r = requests.get(url, params=params, headers=headers, timeout=HTTP_TIMEOUT)
-        r.raise_for_status()
-        js = r.json()
-    return _check_json_ok(js, url)
+        raise requests.HTTPError(f"Non-JSON response from Bybit: {url_used}")
+    return _check_json_ok(js, url_used)
 
 def bybit_post(path: str,
                body: Optional[Dict[str, Any]] = None,
                key: str = KEY_TRADE,
                secret: str = SEC_TRADE) -> Dict[str, Any]:
+    """
+    Authenticated POST:
+      - Signs the exact JSON body string used in the request.
+      - No query params are currently used for v5 POSTs here.
+    """
     body = body or {}
-    url = BYBIT_BASE + path
-    data = orjson.dumps(body).decode()
-    headers = _headers(key, secret, body=data)
-    r = _with_retries(lambda: requests.post(url, data=data, headers=headers, timeout=HTTP_TIMEOUT))
+    url = f"{BYBIT_BASE}{path}"
+
+    def _call() -> requests.Response:
+        data = orjson.dumps(body).decode()
+        headers = _headers(key, secret, body=data)
+        return requests.post(url, data=data, headers=headers, timeout=HTTP_TIMEOUT)
+
+    r = _with_retries(_call)
+
     try:
         js = r.json()
     except Exception:
         raise requests.HTTPError(f"Non-JSON response from Bybit: {url}")
-    if isinstance(js, dict) and js.get("retCode") == 10002:
-        sync_time(True)
-        headers = _headers(key, secret, body=data)
-        r = requests.post(url, data=data, headers=headers, timeout=HTTP_TIMEOUT)
-        r.raise_for_status()
-        js = r.json()
     return _check_json_ok(js, url)
 
 # --------- Account / Positions / MMR ----------
+
 def get_equity_usdt() -> Decimal:
     res = bybit_get("/v5/account/wallet-balance", {"accountType": "UNIFIED"})
     for acc in res.get("result", {}).get("list", []) or []:
@@ -274,7 +301,7 @@ def get_mmr_pct() -> Decimal:
 def list_open_positions() -> List[Dict[str, Any]]:
     res = bybit_get("/v5/position/list", {"category": "linear", "settleCoin": "USDT"})
     rows = res.get("result", {}).get("list", []) or []
-    out = []
+    out: List[Dict[str, Any]] = []
     for p in rows:
         try:
             if Decimal(str(p.get("size", "0"))) > 0:
@@ -284,8 +311,9 @@ def list_open_positions() -> List[Dict[str, Any]]:
     return out
 
 # --------- Orders / Open orders ----------
+
 def list_open_orders(symbol: Optional[str] = None) -> List[dict]:
-    params = {"category": "linear"}
+    params: Dict[str, Any] = {"category": "linear"}
     if symbol:
         params["symbol"] = symbol
     else:
@@ -296,7 +324,7 @@ def list_open_orders(symbol: Optional[str] = None) -> List[dict]:
 def list_symbol_tp_orders(symbol: str, side_now: str) -> List[dict]:
     """Return open reduce-only limit orders (TPs) for symbol and current side."""
     opp = "Sell" if side_now.lower() == "buy" else "Buy"
-    out = []
+    out: List[dict] = []
     for o in list_open_orders(symbol):
         try:
             if (o.get("orderType") == "Limit"
@@ -308,6 +336,7 @@ def list_symbol_tp_orders(symbol: str, side_now: str) -> List[dict]:
     return out
 
 # --------- Instruments / Market data ----------
+
 _INSTR_CACHE: Dict[str, Dict[str, Decimal]] = {}
 
 def get_ticks(symbol: str) -> Tuple[Decimal, Decimal, Decimal]:
@@ -357,6 +386,7 @@ def atr14(symbol: str, interval: str = "240", limit: int = 100) -> Decimal:
     return sum(trs[-14:]) / Decimal("14")
 
 # --------- Rounding / Qty helpers ----------
+
 def qdown(x: Decimal, step: Decimal) -> Decimal:
     if step <= 0:
         return x
@@ -371,6 +401,7 @@ def pct(val: Decimal, p: Decimal) -> Decimal:
     return (val * p / Decimal(100))
 
 # --------- Tier helpers ----------
+
 def tier_from_equity(eq: Decimal) -> Tuple[int, int]:
     level = 1
     for i, th in enumerate(TIER_LEVELS, start=1):
@@ -391,6 +422,7 @@ def max_conc_for_tier(tier: int) -> int:
     return {1: TIER1_MAX_CONC, 2: TIER2_MAX_CONC, 3: TIER3_MAX_CONC}[tier]
 
 # --------- Leverage / Margin mode / Orders ----------
+
 def set_cross_margin(symbol: str) -> None:
     try:
         bybit_post("/v5/position/switch-isolated", {"category": "linear", "symbol": symbol, "tradeMode": 0})
@@ -462,6 +494,7 @@ def place_reduce_tp(symbol: str, side_now: str, qty: Decimal, price: Decimal, *,
     return bybit_post("/v5/order/create", body)
 
 # --------- TP ladder helpers (STABLE) ----------
+
 def _base_tp_delta(symbol: str, entry_px: Decimal) -> Decimal:
     tick, _, _ = get_ticks(symbol)
     a = atr14(symbol, interval="60", limit=120)  # ATR(14) on 1h
@@ -498,7 +531,7 @@ def calc_tp_prices(symbol: str, side: str, entry_px: Decimal) -> List[Decimal]:
 
     prices: List[Decimal] = []
     run = entry_px
-    for i, gap in enumerate(gaps):
+    for _, gap in enumerate(gaps):
         d = _cap_delta(gap)
         if side.upper() == "LONG":
             run = run + d
@@ -562,6 +595,7 @@ def ensure_tp_ladder_stable(symbol: str, side_now: str, entry_px: Decimal, total
     # Done. If a leg fills later, we DO NOTHING.
 
 # --------- Internal Transfers (drip) ----------
+
 def inter_transfer_usdt_to_sub(uid: str, amount: Decimal) -> Dict[str, Any]:
     body = {
         "transferId": _ts(),
@@ -574,6 +608,7 @@ def inter_transfer_usdt_to_sub(uid: str, amount: Decimal) -> Dict[str, Any]:
     return bybit_post("/v5/asset/transfer/inter-transfer", body, key=KEY_XFER, secret=SEC_XFER)
 
 # --------- Utility: qty from notional % ----------
+
 def qty_from_pct(symbol: str, equity: Decimal, pct_notional: Decimal) -> Decimal:
     price = last_price(symbol)
     if price <= 0:
@@ -583,9 +618,8 @@ def qty_from_pct(symbol: str, equity: Decimal, pct_notional: Decimal) -> Decimal
     raw_qty = notional / price
     return qdown(raw_qty, step)
 
-
-
 # --------- Safety: instrument discovery ----------
+
 def list_linear_usdt_symbols() -> List[str]:
     r = bybit_get("/v5/market/instruments-info", {"category": "linear", "limit": "1000"}, auth=False)
     return [
