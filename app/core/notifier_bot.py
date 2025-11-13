@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Flashback — Central Telegram Notifier
+Flashback — Central Telegram Notifier (env-compatible with current .env)
 
 Purpose:
 - Provide a single, sane place to send Telegram messages from all bots.
-- Support multiple Telegram bots (main, flashback01..flashback10).
-- Enforce:
-    • Per-bot rate limiting (no message floods).
-    • Message de-duplication (no identical spam).
+- Support multiple Telegram bots (main + up to 10 sub-bots).
+- Enforce per-bot:
+    • Rate limiting (no message floods).
+    • Message de-duplication (no identical spam every second).
     • 429-aware mute using Telegram's retry_after.
     • Severity levels: info / warn / error.
 - Simple API for bots:
+
     from app.core.notifier_bot import get_notifier
 
     tg = get_notifier("flashback01")   # or "main"
@@ -19,28 +20,25 @@ Purpose:
     tg.trade("Opened LONG BTCUSDT ...")
     tg.error("Exception in executor: ...")
 
-Env layout (example):
+ENV EXPECTATIONS (matches your current .env):
 
-  # Main notifier
-  TG_MAIN_TOKEN=123456:ABC...
-  TG_MAIN_CHAT=7776809236
+  # Main bot (already present)
+  TG_TOKEN_MAIN=8567...QNLc
+  TG_CHAT_MAIN=7776809236
   TG_LEVEL_MAIN=info      # optional: info | warn | error
 
-  # Flashback subaccount bots (01..10; use as many as you want)
-  TG_FB01_TOKEN=...
-  TG_FB01_CHAT=...
-  TG_LEVEL_FB01=info
-
-  TG_FB02_TOKEN=...
-  TG_FB02_CHAT=...
+  # Subaccount bots (you already have placeholder keys)
+  TG_TOKEN_SUB_1=YOUR_TG_TOKEN_SUB1
+  TG_CHAT_SUB_1=YOUR_CHAT_ID_SUB1
+  TG_LEVEL_SUB_1=info     # optional
 
   ...
-  TG_FB10_TOKEN=...
-  TG_FB10_CHAT=...
+  TG_TOKEN_SUB_10=...
+  TG_CHAT_SUB_10=...
+  TG_LEVEL_SUB_10=warn    # example
 
-Notes:
-- You may use the SAME chat id for all of them if you want a single stream.
-- Or separate chats per bot if you like isolation; the code doesn't care.
+You MAY use the SAME chat id for all bots if you want a single stream.
+Or separate chats per bot; the code doesn’t care.
 """
 
 from __future__ import annotations
@@ -50,7 +48,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Deque, Optional, Tuple
+from typing import Dict, Deque, Optional
 
 import requests
 from dotenv import load_dotenv
@@ -71,7 +69,6 @@ load_dotenv(ENV_PATH)
 # ---------------------------------------------------------------------------
 
 # Rate limits (per notifier, i.e., per token+chat pair)
-# These are intentionally conservative. Adjust via env if needed.
 TG_MAX_PER_30S = int(os.getenv("TG_MAX_PER_30S", "10"))   # msgs per 30 seconds
 TG_MAX_PER_300S = int(os.getenv("TG_MAX_PER_300S", "80")) # msgs per 5 minutes
 
@@ -98,23 +95,35 @@ def _parse_level(s: Optional[str], default: str = "info") -> str:
 
 
 # ---------------------------------------------------------------------------
-# Channel mapping: logical name -> env prefix
+# Channel → env mapping (matches your .env naming)
 # ---------------------------------------------------------------------------
+# Logical names you will use in code:
+#   "main"
+#   "flashback01" .. "flashback10"
+#
+# These map to:
+#   main        -> TG_TOKEN_MAIN / TG_CHAT_MAIN / TG_LEVEL_MAIN
+#   flashback01 -> TG_TOKEN_SUB_1 / TG_CHAT_SUB_1 / TG_LEVEL_SUB_1
+#   flashback02 -> TG_TOKEN_SUB_2 / TG_CHAT_SUB_2 / TG_LEVEL_SUB_2
+#   ...
+#   flashback10 -> TG_TOKEN_SUB_10 / TG_CHAT_SUB_10 / TG_LEVEL_SUB_10
 
-# You can extend this dict as needed. Keys are what bots call `get_notifier` with.
-CHANNEL_ENV_PREFIX: Dict[str, str] = {
-    "main": "TG_MAIN",
-    "flashback01": "TG_FB01",
-    "flashback02": "TG_FB02",
-    "flashback03": "TG_FB03",
-    "flashback04": "TG_FB04",
-    "flashback05": "TG_FB05",
-    "flashback06": "TG_FB06",
-    "flashback07": "TG_FB07",
-    "flashback08": "TG_FB08",
-    "flashback09": "TG_FB09",
-    "flashback10": "TG_FB10",
+CHANNEL_ENV_KEYS: Dict[str, Dict[str, str]] = {
+    "main": {
+        "token": "TG_TOKEN_MAIN",
+        "chat": "TG_CHAT_MAIN",
+        "level": "TG_LEVEL_MAIN",
+    },
 }
+
+# Add flashback01..flashback10 mappings
+for i in range(1, 11):
+    name = f"flashback{i:02d}"  # flashback01, flashback02, ...
+    CHANNEL_ENV_KEYS[name] = {
+        "token": f"TG_TOKEN_SUB_{i}",
+        "chat": f"TG_CHAT_SUB_{i}",
+        "level": f"TG_LEVEL_SUB_{i}",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -147,7 +156,6 @@ class TelegramNotifier:
     min_level: str = "info"
     rate_state: _RateState = field(default_factory=_RateState)
 
-    # Internal session for performance
     _session: requests.Session = field(default_factory=requests.Session, repr=False)
 
     # ---- Public API --------------------------------------------------------
@@ -205,15 +213,12 @@ class TelegramNotifier:
         # Dedup: same text within window -> drop
         last_t = rs.last_msg_time.get(text)
         if last_t is not None and (now - last_t) < TG_DEDUP_WINDOW_SEC:
-            # Too soon to repeat same text
             return
 
         # Rate limiting
         self._trim_rates(now)
 
         if len(rs.last_30s) >= TG_MAX_PER_30S or len(rs.last_300s) >= TG_MAX_PER_300S:
-            # Too many messages recently; drop to avoid spam / 429
-            # We do NOT send a "suppressed" TG message to avoid recursion.
             print(
                 f"[TG:{self.name}] Rate limit hit; "
                 f"dropping message. last_30s={len(rs.last_30s)}, last_300s={len(rs.last_300s)}"
@@ -235,7 +240,6 @@ class TelegramNotifier:
             resp = self._session.post(url, json=payload, timeout=TG_TIMEOUT_SEC)
         except Exception as e:
             print(f"[TG:{self.name}] Exception: {type(e).__name__}: {e}")
-            # Don't crash bots because Telegram is moody
             return
 
         if resp.status_code == 429:
@@ -255,10 +259,7 @@ class TelegramNotifier:
             return
 
         if not resp.ok:
-            # Log the error but don't crash.
-            print(
-                f"[TG:{self.name}] HTTP {resp.status_code} error: {resp.text!r}"
-            )
+            print(f"[TG:{self.name}] HTTP {resp.status_code} error: {resp.text!r}")
 
     def _trim_rates(self, now: float) -> None:
         """Trim old timestamps from rate deques."""
@@ -279,25 +280,40 @@ class TelegramNotifier:
 _NOTIFIERS: Dict[str, TelegramNotifier] = {}
 
 
-def _load_channel_config(name: str) -> Tuple[str, str, str]:
+def _load_channel_config(name: str) -> TelegramNotifier:
     """
     Load token, chat_id, and level for a logical channel name.
 
-    name: "main", "flashback01", "flashback02", etc.
+    name: "main", "flashback01", "flashback02", ..., "flashback10"
     """
-    prefix = CHANNEL_ENV_PREFIX.get(name)
-    if not prefix:
-        # Guess a prefix on the fly: uppercase name without spaces
-        prefix = "TG_" + name.replace(" ", "").upper()
+    cfg = CHANNEL_ENV_KEYS.get(name, {})
+    token_key = cfg.get("token")
+    chat_key = cfg.get("chat")
+    level_key = cfg.get("level")
 
-    token = os.getenv(f"{prefix}_TOKEN", "")
-    chat_id = os.getenv(f"{prefix}_CHAT", "")
-    level_raw = os.getenv(f"TG_LEVEL_{prefix.split('_', 1)[-1]}", None)
-    # Fallback: TG_LEVEL_DEFAULT
-    level_raw = level_raw or os.getenv("TG_LEVEL_DEFAULT", "info")
+    token = os.getenv(token_key, "") if token_key else ""
+    chat_id = os.getenv(chat_key, "") if chat_key else ""
 
+    # Level: TG_LEVEL_MAIN / TG_LEVEL_SUB_1 / etc. Fallback to TG_LEVEL_DEFAULT.
+    level_raw = os.getenv(level_key) if level_key else None
+    if not level_raw:
+        level_raw = os.getenv("TG_LEVEL_DEFAULT", "info")
     level = _parse_level(level_raw, default="info")
-    return token, chat_id, level
+
+    notifier = TelegramNotifier(
+        name=name,
+        token=token,
+        chat_id=chat_id,
+        min_level=level,
+    )
+
+    token_hint = (token[:8] + "…") if token else "None"
+    print(
+        f"[TG:init] channel={name!r}, token_present={bool(token)}, "
+        f"token_prefix={token_hint}, chat_id={chat_id!r}, level={level}"
+    )
+
+    return notifier
 
 
 def get_notifier(name: str = "main") -> TelegramNotifier:
@@ -307,29 +323,16 @@ def get_notifier(name: str = "main") -> TelegramNotifier:
     Usage:
         from app.core.notifier_bot import get_notifier
 
-        tg = get_notifier("flashback01")
-        tg.info("Bot started")
-        tg.trade("Opened LONG BTCUSDT 25x at 0.1234")
+        tg_main = get_notifier("main")
+        tg_fb01 = get_notifier("flashback01")
+
+        tg_main.info("Supervisor starting...")
+        tg_fb01.trade("flashback01: LONG BTCUSDT 25x at 61234.5")
     """
     name = name.strip()
     if name in _NOTIFIERS:
         return _NOTIFIERS[name]
 
-    token, chat_id, level = _load_channel_config(name)
-
-    notifier = TelegramNotifier(
-        name=name,
-        token=token,
-        chat_id=chat_id,
-        min_level=level,
-    )
+    notifier = _load_channel_config(name)
     _NOTIFIERS[name] = notifier
-
-    # Print a small hint at creation time (no secrets leaked)
-    token_hint = (token[:8] + "…") if token else "None"
-    print(
-        f"[TG:init] channel={name!r}, token_present={bool(token)}, "
-        f"token_prefix={token_hint}, chat_id={chat_id!r}, level={level}"
-    )
-
     return notifier
