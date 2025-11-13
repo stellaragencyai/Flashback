@@ -31,6 +31,7 @@ def send_tg(msg: str):
         pass
 
 # Bots to supervise
+# app/tools/supervisor.py → BOTS list
 BOTS = [
     "app.bots.breaker_watch",
     "app.bots.tier_enforcer",
@@ -38,6 +39,8 @@ BOTS = [
     "app.bots.tp_sl_manager",
     "app.bots.trade_journal",
     "app.bots.volatility_scout",
+    "app.bots.profit_sweeper",      # ← add
+    "app.bots.per_position_drip",   # ← add
 ]
 
 procs = {}
