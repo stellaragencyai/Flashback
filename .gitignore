@@ -1,0 +1,14 @@
+# venvs and Python junk
+.venv/
+__pycache__/
+*.pyc
+
+# secrets & state
+.env
+app/state/
+app/logs/
+
+# OS/editor trash
+.DS_Store
+Thumbs.db
+.vscode/
