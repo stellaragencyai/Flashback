@@ -583,6 +583,8 @@ def qty_from_pct(symbol: str, equity: Decimal, pct_notional: Decimal) -> Decimal
     raw_qty = notional / price
     return qdown(raw_qty, step)
 
+
+
 # --------- Safety: instrument discovery ----------
 def list_linear_usdt_symbols() -> List[str]:
     r = bybit_get("/v5/market/instruments-info", {"category": "linear", "limit": "1000"}, auth=False)
