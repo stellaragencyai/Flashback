@@ -82,8 +82,8 @@ def send_tg(msg: str) -> None:
     Send a Telegram message via the central notifier.
     Safe: will not crash supervisor if Telegram fails or is misconfigured.
     """
-    if not tg.enabled:
-        # Still print locally so you see *something* in logs
+    # No 'enabled' attribute; just check token + chat_id
+    if not getattr(tg, "token", None) or not getattr(tg, "chat_id", None):
         print(f"[SUPERVISOR][TG disabled] {msg}")
         return
     tg.info(msg)
@@ -350,7 +350,7 @@ def stop_all() -> None:
 def main() -> None:
     print(f"Project root: {ROOT_DIR}")
     print(f"Using .env:   {ENV_PATH} (exists={ENV_PATH.exists()})")
-    print(f"TG configured: {'yes' if tg.enabled else 'no'}")
+    print(f"TG configured: {'yes' if (getattr(tg, 'token', None) and getattr(tg, 'chat_id', None)) else 'no'}")
     print(f"Bybit base:   {BYBIT_BASE}")
     print(f"Heartbeat:    {HEARTBEAT_INTERVAL} sec")
 
