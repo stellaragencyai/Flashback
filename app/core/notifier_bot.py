@@ -5,7 +5,7 @@ Flashback — Central Telegram Notifier (env-compatible with current .env)
 
 Purpose:
 - Provide a single, sane place to send Telegram messages from all bots.
-- Support multiple Telegram bots (main + up to 10 sub-bots).
+- Support multiple Telegram bots (main + up to 10 sub-bots + journal bot).
 - Enforce per-bot:
     • Rate limiting (no message floods).
     • Message de-duplication (no identical spam every second).
@@ -15,19 +15,24 @@ Purpose:
 
     from app.core.notifier_bot import get_notifier
 
-    tg = get_notifier("flashback01")   # or "main"
+    tg = get_notifier("flashback01")   # or "main", "journal"
     tg.info("flashback01 bot started")
     tg.trade("Opened LONG BTCUSDT ...")
     tg.error("Exception in executor: ...")
 
 ENV EXPECTATIONS (matches your current .env):
 
-  # Main bot (already present)
+  # Main bot
   TG_TOKEN_MAIN=...
   TG_CHAT_MAIN=7776809236
   TG_LEVEL_MAIN=info      # optional: info | warn | error
 
-  # Subaccount bots (you already have placeholder keys)
+  # Journal bot (optional, for trade_journal.py)
+  TG_TOKEN_JOURNAL=...
+  TG_CHAT_JOURNAL=...
+  TG_LEVEL_JOURNAL=info   # optional
+
+  # Subaccount bots
   TG_TOKEN_SUB_1=...
   TG_CHAT_SUB_1=...
   TG_LEVEL_SUB_1=info     # optional
@@ -123,10 +128,12 @@ def _parse_level(s: Optional[str], default: str = "info") -> str:
 # ---------------------------------------------------------------------------
 # Logical names you will use in code:
 #   "main"
+#   "journal"
 #   "flashback01" .. "flashback10"
 #
 # These map to:
 #   main        -> TG_TOKEN_MAIN / TG_CHAT_MAIN / TG_LEVEL_MAIN
+#   journal     -> TG_TOKEN_JOURNAL / TG_CHAT_JOURNAL / TG_LEVEL_JOURNAL
 #   flashback01 -> TG_TOKEN_SUB_1 / TG_CHAT_SUB_1 / TG_LEVEL_SUB_1
 #   flashback02 -> TG_TOKEN_SUB_2 / TG_CHAT_SUB_2 / TG_LEVEL_SUB_2
 #   ...
@@ -137,6 +144,11 @@ CHANNEL_ENV_KEYS: Dict[str, Dict[str, str]] = {
         "token": "TG_TOKEN_MAIN",
         "chat": "TG_CHAT_MAIN",
         "level": "TG_LEVEL_MAIN",
+    },
+    "journal": {
+        "token": "TG_TOKEN_JOURNAL",
+        "chat": "TG_CHAT_JOURNAL",
+        "level": "TG_LEVEL_JOURNAL",
     },
 }
 
@@ -181,6 +193,16 @@ class TelegramNotifier:
     rate_state: _RateState = field(default_factory=_RateState)
 
     _session: requests.Session = field(default_factory=requests.Session, repr=False)
+
+    # ---- Convenience flags -------------------------------------------------
+
+    @property
+    def enabled(self) -> bool:
+        """
+        True if this notifier has both token and chat_id configured.
+        Safe to use from other modules: `if tg.enabled: ...`
+        """
+        return bool(self.token and self.chat_id)
 
     # ---- Public API --------------------------------------------------------
 
@@ -308,7 +330,7 @@ def _load_channel_config(name: str) -> TelegramNotifier:
     """
     Load token, chat_id, and level for a logical channel name.
 
-    name: "main", "flashback01", "flashback02", ..., "flashback10"
+    name: "main", "journal", "flashback01", "flashback02", ..., "flashback10"
     """
     cfg = CHANNEL_ENV_KEYS.get(name, {})
     token_key = cfg.get("token")
@@ -318,7 +340,8 @@ def _load_channel_config(name: str) -> TelegramNotifier:
     token = os.getenv(token_key, "") if token_key else ""
     chat_id = os.getenv(chat_key, "") if chat_key else ""
 
-    # Level: TG_LEVEL_MAIN / TG_LEVEL_SUB_1 / etc. Fallback to TG_LEVEL_DEFAULT.
+    # Level: TG_LEVEL_MAIN / TG_LEVEL_SUB_1 / TG_LEVEL_JOURNAL / etc.
+    # Fallback to TG_LEVEL_DEFAULT.
     level_raw = os.getenv(level_key) if level_key else None
     if not level_raw:
         level_raw = os.getenv("TG_LEVEL_DEFAULT", "info")
@@ -349,9 +372,11 @@ def get_notifier(name: str = "main") -> TelegramNotifier:
 
         tg_main = get_notifier("main")
         tg_fb01 = get_notifier("flashback01")
+        tg_journal = get_notifier("journal")
 
         tg_main.info("Supervisor starting...")
         tg_fb01.trade("flashback01: LONG BTCUSDT 25x at 61234.5")
+        tg_journal.info("Journal: new closed trade logged.")
     """
     name = name.strip()
     if name in _NOTIFIERS:

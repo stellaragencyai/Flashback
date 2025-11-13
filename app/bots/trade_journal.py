@@ -1,7 +1,7 @@
 # app/bots/trade_journal.py
-# Flashback — Trade Journal (Main)
+# Flashback — Trade Journal (Main, journal-bot + hardened)
 #
-# What it does (properly now)
+# What it does
 # - Streams executions with a persistent cursor so we don't miss partials.
 # - Classifies each new fill as ENTRY/ADD or PARTIAL EXIT based on current position side.
 # - On first entry per symbol: captures an OPEN snapshot (entry, size, lev, margin, SL, TP grid).
@@ -10,7 +10,7 @@
 #
 # Assumptions
 # - Linear USDT perps, Unified, CROSS. Keys and Telegram set in .env.
-# - flashback_common has time-sync + retry patch and Telegram helper.
+# - flashback_common has time-sync + retry patch.
 #
 # Files
 # - app/state/journal.jsonl         (append-only ledger of closed trades)
@@ -18,15 +18,23 @@
 # - app/state/journal_open.json     (last known open snapshot per symbol)
 
 import time
+import traceback
 from decimal import Decimal
 from pathlib import Path
 from typing import Dict, Tuple, List, Optional
+
 import orjson
 
 from app.core.flashback_common import (
-    bybit_get, send_tg, list_open_positions, get_equity_usdt,
-    last_price, get_ticks, psnap, atr14
+    bybit_get,
+    list_open_positions,
+    get_equity_usdt,
+    get_ticks,
+    psnap,
+    atr14,
 )
+
+from app.core.notifier_bot import get_notifier
 
 CATEGORY = "linear"
 POLL_SECONDS = 3
@@ -34,6 +42,13 @@ POLL_SECONDS = 3
 JOURNAL_LEDGER = Path("app/state/journal.jsonl")
 CURSOR_PATH    = Path("app/state/journal_cursor.json")
 OPEN_STATE     = Path("app/state/journal_open.json")
+
+# Journal metadata
+ACCOUNT_LABEL     = "MAIN"
+JOURNAL_VERSION   = 1
+
+# Use dedicated journal notifier channel
+tg = get_notifier("journal")
 
 # Import spacing config from common if present
 try:
@@ -56,7 +71,9 @@ def _write_jsonl(row: dict) -> None:
 
 def _load_cursor() -> Optional[str]:
     try:
-        return orjson.loads(CURSOR_PATH.read_bytes()).get("cursor")
+        data = orjson.loads(CURSOR_PATH.read_bytes())
+        cur = data.get("cursor", "") or ""
+        return cur or None
     except Exception:
         return None
 
@@ -78,8 +95,10 @@ def _human_dur(ms: int) -> str:
     s = ms // 1000
     h, s = divmod(s, 3600)
     m, s = divmod(s, 60)
-    if h: return f"{h}h {m}m {s}s"
-    if m: return f"{m}m {s}s"
+    if h:
+        return f"{h}h {m}m {s}s"
+    if m:
+        return f"{m}m {s}s"
     return f"{s}s"
 
 # ---------- grid inference (fallback if TPs not yet visible) ----------
@@ -164,7 +183,10 @@ def _fetch_exec_batch(cursor: Optional[str]) -> Tuple[List[dict], Optional[str]]
 
 def _exec_is_trade(e: dict) -> bool:
     # Filter to true trade executions
-    return (e.get("execType") == "Trade") and Decimal(str(e.get("execQty", "0"))) > 0
+    try:
+        return (e.get("execType") == "Trade") and Decimal(str(e.get("execQty", "0"))) > 0
+    except Exception:
+        return False
 
 def _side_from_exec(e: dict) -> Optional[str]:
     s = e.get("side")
@@ -172,18 +194,37 @@ def _side_from_exec(e: dict) -> Optional[str]:
         return s
     return None
 
+# ---------- helpers for final pnl ----------
+
+def _closed_pnl_latest(symbol: str) -> Tuple[Optional[Decimal], Optional[Decimal]]:
+    try:
+        r = bybit_get("/v5/position/closed-pnl", {"category": CATEGORY, "symbol": symbol, "limit": "1"})
+        rows = (r.get("result", {}) or {}).get("list", []) or []
+        if not rows:
+            return None, None
+        row = rows[0]
+        pnl = Decimal(str(row.get("closedPnl", "0")))
+        exit_px = row.get("avgExitPrice")
+        exit_px = Decimal(str(exit_px)) if exit_px not in (None, "", "0") else None
+        return pnl, exit_px
+    except Exception:
+        return None, None
+
 # ---------- main loop ----------
 
 def loop():
-    send_tg("📝 Flashback Trade Journal started.")
+    tg.info("📝 Flashback Trade Journal started.")
     open_state: Dict[str, dict] = _load_open_state()
     cursor = _load_cursor()
 
-    # prime current positions snapshot
-    def _pos_map():
-        m = {}
+    def _pos_map() -> Dict[str, dict]:
+        m: Dict[str, dict] = {}
         for p in list_open_positions():
-            m[p["symbol"]] = p
+            try:
+                sym = p["symbol"]
+                m[sym] = p
+            except Exception:
+                continue
         return m
 
     pos_now = _pos_map()
@@ -210,9 +251,11 @@ def loop():
                 "stop_loss": str(sl) if sl is not None else None,
                 "tp_prices": [str(x) for x in tps_f],
                 "avg_rr_5": str(rr) if rr is not None else None,
+                "account": ACCOUNT_LABEL,
+                "journal_version": JOURNAL_VERSION,
             }
             open_state[sym] = snap
-            send_tg(
+            tg.trade(
                 f"🟢 OPEN {sym} {side} @ {snap['entry_price']} "
                 f"| lev {snap.get('leverage')} | size {snap['size']} "
                 f"| SL {snap.get('stop_loss')} | TP {', '.join(snap['tp_prices'])}"
@@ -281,27 +324,29 @@ def loop():
                                 "stop_loss": str(sl) if sl is not None else None,
                                 "tp_prices": [str(x) for x in tps_f],
                                 "avg_rr_5": str(rr) if rr is not None else None,
+                                "account": ACCOUNT_LABEL,
+                                "journal_version": JOURNAL_VERSION,
                             }
                             open_state[symbol] = snap
-                            send_tg(
+                            _save_open_state(open_state)
+                            tg.trade(
                                 f"🟢 OPEN {symbol} {side_now} @ {snap['entry_price']} "
                                 f"| lev {snap.get('leverage')} | size {snap['size']} "
                                 f"| SL {snap.get('stop_loss')} | TP {', '.join(snap['tp_prices'])}"
                             )
                         else:
                             # No position yet (race), still emit a lightweight ADD/ENTRY
-                            send_tg(f"🟢 ENTRY {symbol} {side_exec} fill {qty} @ {px}")
+                            tg.trade(f"🟢 ENTRY {symbol} {side_exec} fill {qty} @ {px}")
                     else:
                         # It’s an add-on to an existing position
-                        send_tg(f"➕ ADD {symbol} {side_exec} fill {qty} @ {px} | size now ≈ {pos_size}")
+                        tg.trade(f"➕ ADD {symbol} {side_exec} fill {qty} @ {px} | size now ≈ {pos_size}")
 
                 # 3b) PARTIAL EXIT
                 if is_exit_partial:
                     # Remaining size from current position map is authoritative
-                    send_tg(f"➖ PARTIAL EXIT {symbol} {side_exec} fill {qty} @ {px} | remaining ≈ {pos_size}")
+                    tg.trade(f"➖ PARTIAL EXIT {symbol} {side_exec} fill {qty} @ {px} | remaining ≈ {pos_size}")
 
             # 4) Detect full closures via positions diff and write ledger rows
-            # Build set of all seen symbols (open_state keys + current pos keys)
             cur_syms = set(pos_now.keys())
             tracked_syms = list(open_state.keys())
             for sym in tracked_syms:
@@ -309,20 +354,22 @@ def loop():
                     # Position fully closed -> fetch closed-PnL and finalize
                     open_row = open_state.get(sym) or {}
                     pnl, exit_px = _closed_pnl_latest(sym)
-                    now = _now_ms()
-                    dur = now - int(open_row.get("ts_open", now))
+                    now_ms = _now_ms()
+                    dur = now_ms - int(open_row.get("ts_open", now_ms))
                     row = {
                         **open_row,
-                        "ts_close": now,
+                        "ts_close": now_ms,
                         "duration_ms": dur,
                         "duration_human": _human_dur(dur),
                         "realized_pnl": str(pnl) if pnl is not None else None,
                         "exit_price": str(exit_px) if exit_px is not None else None,
                         "equity_after_close": str(get_equity_usdt()),
                         "symbol": sym,
+                        "account": open_row.get("account", ACCOUNT_LABEL),
+                        "journal_version": open_row.get("journal_version", JOURNAL_VERSION),
                     }
                     _write_jsonl(row)
-                    send_tg(
+                    tg.trade(
                         "🔴 CLOSE {sym} | PnL {pnl} | exit {exit_px} | dur {dur} | eq {eq}".format(
                             sym=sym,
                             pnl=row.get("realized_pnl"),
@@ -335,30 +382,17 @@ def loop():
                     _save_open_state(open_state)
 
             # 5) Advance cursor and sleep
-            if next_cur:
+            if next_cur is not None:
                 cursor = next_cur
                 _save_cursor(cursor)
+
             time.sleep(POLL_SECONDS)
 
         except Exception as e:
-            send_tg(f"[Journal] {e}")
+            tb = traceback.format_exc()
+            tg.error(f"[Journal] {e}\n{tb}")
             time.sleep(5)
 
-# ---------- helpers for final pnl ----------
-
-def _closed_pnl_latest(symbol: str) -> Tuple[Optional[Decimal], Optional[Decimal]]:
-    try:
-        r = bybit_get("/v5/position/closed-pnl", {"category": CATEGORY, "symbol": symbol, "limit": "1"})
-        rows = (r.get("result", {}) or {}).get("list", []) or []
-        if not rows:
-            return None, None
-        row = rows[0]
-        pnl = Decimal(str(row.get("closedPnl", "0")))
-        exit_px = row.get("avgExitPrice")
-        exit_px = Decimal(str(exit_px)) if exit_px not in (None, "", "0") else None
-        return pnl, exit_px
-    except Exception:
-        return None, None
 
 if __name__ == "__main__":
     loop()

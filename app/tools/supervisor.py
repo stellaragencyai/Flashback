@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Flashback — Supervisor v4 (Root-aware + Subaccount Status + Central Notifier)
+# Flashback — Supervisor v4.1 (Root-aware + Subaccount Status + Central Notifier)
 #
 # What this does:
 # - Forces project root as working directory so imports and .env are consistent.
@@ -48,9 +48,12 @@ from typing import Dict, List, Tuple, Optional
 import hmac
 import hashlib
 import requests
+import traceback
 from dotenv import load_dotenv
 
 from app.core.notifier_bot import get_notifier
+
+SUPERVISOR_VERSION = "4.1"
 
 # ---------- PATHS & ENV ----------
 
@@ -77,16 +80,24 @@ tg = get_notifier("main")
 
 # ---------- TELEGRAM HELPERS ----------
 
+def _tg_configured() -> bool:
+    """Return True if central notifier has a usable token + chat."""
+    return bool(getattr(tg, "token", None) and getattr(tg, "chat_id", None))
+
 def send_tg(msg: str) -> None:
     """
     Send a Telegram message via the central notifier.
     Safe: will not crash supervisor if Telegram fails or is misconfigured.
     """
-    # No 'enabled' attribute; just check token + chat_id
-    if not getattr(tg, "token", None) or not getattr(tg, "chat_id", None):
+    if not _tg_configured():
+        # Still print locally so you see *something* in logs
         print(f"[SUPERVISOR][TG disabled] {msg}")
         return
-    tg.info(msg)
+    try:
+        tg.info(msg)
+    except Exception:
+        # Never let Telegram kill the supervisor
+        print(f"[SUPERVISOR][TG error] {msg}")
 
 # ---------- BYBIT AUTH & SUBACCOUNT CHECKS ----------
 
@@ -252,7 +263,16 @@ def check_all_subaccounts() -> List[Dict[str, str]]:
 
     results: List[Dict[str, str]] = []
     for cfg in subconfigs:
-        res = check_subaccount(cfg["label"], cfg["prefix"])
+        try:
+            res = check_subaccount(cfg["label"], cfg["prefix"])
+        except Exception as e:
+            res = {
+                "label": cfg["label"],
+                "prefix": cfg["prefix"],
+                "status": "ERROR",
+                "equity": "",
+                "detail": f"check-exc: {type(e).__name__}",
+            }
         results.append(res)
     return results
 
@@ -262,7 +282,7 @@ def format_boot_report(subs: List[Dict[str, str]], bots: List[str]) -> str:
     Build a human-readable boot report for Telegram.
     """
     lines: List[str] = []
-    lines.append("🚀 Flashback Supervisor Booted")
+    lines.append(f"🚀 Flashback Supervisor v{SUPERVISOR_VERSION} Booted")
     lines.append("")
     lines.append("Subaccounts status:")
 
@@ -348,9 +368,10 @@ def stop_all() -> None:
 # ---------- MAIN LOOP ----------
 
 def main() -> None:
+    print(f"Flashback Supervisor v{SUPERVISOR_VERSION}")
     print(f"Project root: {ROOT_DIR}")
     print(f"Using .env:   {ENV_PATH} (exists={ENV_PATH.exists()})")
-    print(f"TG configured: {'yes' if (getattr(tg, 'token', None) and getattr(tg, 'chat_id', None)) else 'no'}")
+    print(f"TG configured: {'yes' if _tg_configured() else 'no'}")
     print(f"Bybit base:   {BYBIT_BASE}")
     print(f"Heartbeat:    {HEARTBEAT_INTERVAL} sec")
 
@@ -393,7 +414,7 @@ def main() -> None:
                 total_restarts = sum(restart_counts.values())
                 uptime_min = int((now - start_ts) / 60)
                 hb = (
-                    f"🩺 Flashback Supervisor heartbeat\n"
+                    f"🩺 Flashback Supervisor heartbeat (v{SUPERVISOR_VERSION})\n"
                     f"- Uptime: {uptime_min} min\n"
                     f"- Bots running: {alive}/{total}\n"
                     f"- Total restarts: {total_restarts}"
@@ -404,8 +425,15 @@ def main() -> None:
             time.sleep(2)
     except KeyboardInterrupt:
         stop_all()
-    except Exception as e:
-        send_tg(f"❌ Supervisor error: {e}")
+    except Exception:
+        tb = traceback.format_exc()
+        msg = f"❌ Supervisor fatal error:\n{tb}"
+        print(msg)
+        if _tg_configured():
+            try:
+                tg.error(msg)
+            except Exception:
+                pass
         stop_all()
 
 
