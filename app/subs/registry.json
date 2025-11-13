@@ -1,0 +1,21 @@
+{
+  "subs": [
+    {
+      "name": "Sub1-Canary",
+      "uid": "260417078",
+      "risk": { "per_trade_pct": 0.50, "daily_dd_pct": 5.0, "mode": "CROSS", "max_positions": 1 },
+      "strategy": { "profile": "Standard-5", "timeframes": ["5","15"], "universe": "ALT_USDT" },
+      "ai": { "enabled": true, "policy": "bandit_v1" },
+      "enabled": false
+    },
+    {
+      "name": "Sub2-Breakout",
+      "uid": "152304954",
+      "risk": { "per_trade_pct": 0.35, "daily_dd_pct": 4.0, "mode": "CROSS", "max_positions": 2 },
+      "strategy": { "profile": "Standard-5", "timeframes": ["5","15"], "universe": "ALT_USDT" },
+      "ai": { "enabled": true, "policy": "bandit_v1" },
+      "enabled": false
+    }
+    // ...add all 10...
+  ]
+}
