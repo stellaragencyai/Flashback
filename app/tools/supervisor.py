@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Flashback — Supervisor v4.1 (Root-aware + Subaccount Status + Central Notifier)
+# Flashback — Supervisor v4.2 (Root-aware + Subaccount Status + Central + Sub-bot Online Pings)
 #
 # What this does:
 # - Forces project root as working directory so imports and .env are consistent.
@@ -7,6 +7,7 @@
 # - On startup:
 #     • Checks Bybit connectivity for MAIN + flashback01..flashback10
 #     • Sends a Telegram "boot report" with subaccount status + planned bots
+#     • Sends a "bot online" confirmation to every configured subaccount Telegram bot
 # - Keeps all core bots running; auto-restarts on crash.
 # - Logs each bot's stdout/stderr to app/logs/*.log
 # - Sends Telegram alerts on bot start/crash + periodic heartbeat.
@@ -22,6 +23,8 @@
 #   # Fallbacks for MAIN (if above not set):
 #   BYBIT_MAIN_READ_KEY=...
 #   BYBIT_MAIN_READ_SECRET=...
+#   BYBIT_MAIN_TRADE_KEY=...
+#   BYBIT_MAIN_TRADE_SECRET=...
 #
 #   # Subaccounts (optional until you wire them):
 #   BYBIT_FLASHBACK01_API_KEY=...
@@ -52,8 +55,9 @@ import traceback
 from dotenv import load_dotenv
 
 from app.core.notifier_bot import get_notifier
+from app.core.subs import load_subs, send_tg_to_sub
 
-SUPERVISOR_VERSION = "4.1"
+SUPERVISOR_VERSION = "4.2"
 
 # ---------- PATHS & ENV ----------
 
@@ -83,6 +87,7 @@ tg = get_notifier("main")
 def _tg_configured() -> bool:
     """Return True if central notifier has a usable token + chat."""
     return bool(getattr(tg, "token", None) and getattr(tg, "chat_id", None))
+
 
 def send_tg(msg: str) -> None:
     """
@@ -312,6 +317,34 @@ def format_boot_report(subs: List[Dict[str, str]], bots: List[str]) -> str:
 
     return "\n".join(lines)
 
+# ---------- Sub-bot "online" notifier ----------
+
+def notify_sub_bots_online() -> None:
+    """
+    Send a short 'online' ping to every configured subaccount Telegram bot.
+
+    Uses app.core.subs.load_subs() + send_tg_to_sub().
+    """
+    try:
+        subs = load_subs()
+    except Exception as e:
+        send_tg(f"⚠️ Sub-bot notify failed (load_subs): {type(e).__name__}")
+        return
+
+    if not subs:
+        return
+
+    for sub in subs:
+        try:
+            label = sub.get("label", "sub")
+            uid = sub.get("uid", "?")
+            send_tg_to_sub(
+                sub,
+                f"✅🤖 Flashback Supervisor v{SUPERVISOR_VERSION}: bot online for {label} (UID {uid})."
+            )
+        except Exception as e:
+            send_tg(f"⚠️ Sub-bot notify failed for {sub.get('label', '?')}: {type(e).__name__}")
+
 # ---------- BOT LIST ----------
 
 # app/tools/supervisor.py → BOTS list
@@ -384,6 +417,9 @@ def main() -> None:
     if subs:
         boot_msg = format_boot_report(subs, BOTS)
         send_tg(boot_msg)
+
+    # 1b) Notify all sub-bots that they are "online"
+    notify_sub_bots_online()
 
     # 2) Start all bots
     for m in BOTS:
