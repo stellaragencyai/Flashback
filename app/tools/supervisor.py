@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-# Flashback — Supervisor v4.2 (Root-aware + Subaccount Status + Central + Sub-bot Online Pings)
+# Flashback — Supervisor v4.2 (Root-aware + Subaccount Status + Central + Sub Pings)
 #
 # What this does:
 # - Forces project root as working directory so imports and .env are consistent.
 # - Loads .env from project root explicitly.
 # - On startup:
 #     • Checks Bybit connectivity for MAIN + flashback01..flashback10
-#     • Sends a Telegram "boot report" with subaccount status + planned bots
-#     • Sends a "bot online" confirmation to every configured subaccount Telegram bot
+#     • Sends a Telegram "boot report" with subaccount status + planned bots (to main channel)
+#     • Sends a per-subaccount Telegram "online" ping via each sub's own bot (flashback01..10)
 # - Keeps all core bots running; auto-restarts on crash.
 # - Logs each bot's stdout/stderr to app/logs/*.log
 # - Sends Telegram alerts on bot start/crash + periodic heartbeat.
@@ -23,8 +23,6 @@
 #   # Fallbacks for MAIN (if above not set):
 #   BYBIT_MAIN_READ_KEY=...
 #   BYBIT_MAIN_READ_SECRET=...
-#   BYBIT_MAIN_TRADE_KEY=...
-#   BYBIT_MAIN_TRADE_SECRET=...
 #
 #   # Subaccounts (optional until you wire them):
 #   BYBIT_FLASHBACK01_API_KEY=...
@@ -55,7 +53,7 @@ import traceback
 from dotenv import load_dotenv
 
 from app.core.notifier_bot import get_notifier
-from app.core.subs import load_subs, send_tg_to_sub
+from app.core.subs import load_subs, send_tg_to_sub  # <-- sub registry + per-sub TG
 
 SUPERVISOR_VERSION = "4.2"
 
@@ -79,7 +77,7 @@ BYBIT_BASE = os.getenv("BYBIT_BASE", "https://api.bybit.com").rstrip("/")
 # Supervisor heartbeat interval (seconds), overridable via env
 HEARTBEAT_INTERVAL = int(os.getenv("SUPERVISOR_HEARTBEAT_SEC", "300"))
 
-# Central notifier
+# Central notifier (main channel)
 tg = get_notifier("main")
 
 # ---------- TELEGRAM HELPERS ----------
@@ -88,20 +86,17 @@ def _tg_configured() -> bool:
     """Return True if central notifier has a usable token + chat."""
     return bool(getattr(tg, "token", None) and getattr(tg, "chat_id", None))
 
-
 def send_tg(msg: str) -> None:
     """
     Send a Telegram message via the central notifier.
     Safe: will not crash supervisor if Telegram fails or is misconfigured.
     """
     if not _tg_configured():
-        # Still print locally so you see *something* in logs
         print(f"[SUPERVISOR][TG disabled] {msg}")
         return
     try:
         tg.info(msg)
     except Exception:
-        # Never let Telegram kill the supervisor
         print(f"[SUPERVISOR][TG error] {msg}")
 
 # ---------- BYBIT AUTH & SUBACCOUNT CHECKS ----------
@@ -163,7 +158,6 @@ def _load_subaccount_creds(prefix: str) -> Tuple[Optional[str], Optional[str]]:
     secret = os.getenv(f"{prefix}_API_SECRET")
 
     if prefix == "BYBIT_MAIN":
-        # Fallbacks if the *_API_* variant is not set
         if not key:
             key = os.getenv("BYBIT_MAIN_READ_KEY") or os.getenv("BYBIT_MAIN_TRADE_KEY")
         if not secret:
@@ -221,10 +215,9 @@ def check_subaccount(label: str, prefix: str) -> Dict[str, str]:
     ret_msg = data.get("retMsg", "")
 
     if ret_code == 0:
-        # Try to extract some equity info for the report
         equity_str = ""
         try:
-            lst = data.get("result", {}).get("list", [])
+            lst = data.get("result", {}).get("list", []) or []
             if lst:
                 acct = lst[0]
                 equity_str = acct.get("totalEquity") or acct.get("totalWalletBalance") or ""
@@ -284,10 +277,10 @@ def check_all_subaccounts() -> List[Dict[str, str]]:
 
 def format_boot_report(subs: List[Dict[str, str]], bots: List[str]) -> str:
     """
-    Build a human-readable boot report for Telegram.
+    Build a human-readable boot report for Telegram (main channel).
     """
     lines: List[str] = []
-    lines.append(f"🚀 Flashback Supervisor v{SUPERVISOR_VERSION} Booted")
+    lines.append(f"🚀 Flashback Supervisor v{SUPERVISOR_VERSION} booted")
     lines.append("")
     lines.append("Subaccounts status:")
 
@@ -317,37 +310,43 @@ def format_boot_report(subs: List[Dict[str, str]], bots: List[str]) -> str:
 
     return "\n".join(lines)
 
-# ---------- Sub-bot "online" notifier ----------
+# ---------- Per-sub startup notifications ----------
 
 def notify_sub_bots_online() -> None:
     """
-    Send a short 'online' ping to every configured subaccount Telegram bot.
-
-    Uses app.core.subs.load_subs() + send_tg_to_sub().
+    Send a startup confirmation message to each configured subaccount's Telegram bot.
+    Uses app.core.subs.load_subs() and send_tg_to_sub().
     """
     try:
         subs = load_subs()
     except Exception as e:
-        send_tg(f"⚠️ Sub-bot notify failed (load_subs): {type(e).__name__}")
+        send_tg(f"⚠️ Failed to load subs for per-sub TG notification: {type(e).__name__}")
         return
 
     if not subs:
+        # Nothing configured, nothing to ping
+        send_tg("ℹ️ No SUB_UID_* configured; skipping per-sub startup pings.")
         return
 
     for sub in subs:
+        label = sub.get("label", "?")
+        uid = sub.get("uid", "?")
         try:
-            label = sub.get("label", "sub")
-            uid = sub.get("uid", "?")
-            send_tg_to_sub(
-                sub,
-                f"✅🤖 Flashback Supervisor v{SUPERVISOR_VERSION}: bot online for {label} (UID {uid})."
+            msg = (
+                f"🤖 Flashback Supervisor v{SUPERVISOR_VERSION} is online.\n"
+                f"- Subaccount: {label}\n"
+                f"- UID: {uid}\n"
+                f"- Managed by main supervisor on: {ROOT_DIR}\n"
+                f"- Core bots: breaker_watch, tier_enforcer, risk_guardian, "
+                f"tp_sl_manager, trade_journal, volatility_scout, profit_sweeper, per_position_drip"
             )
+            send_tg_to_sub(sub, msg)
+            print(f"[SUB-NOTIFY] Startup ping sent to {label} (uid={uid})")
         except Exception as e:
-            send_tg(f"⚠️ Sub-bot notify failed for {sub.get('label', '?')}: {type(e).__name__}")
+            send_tg(f"⚠️ Failed to send startup ping to {label} (uid={uid}): {e}")
 
 # ---------- BOT LIST ----------
 
-# app/tools/supervisor.py → BOTS list
 BOTS: List[str] = [
     "app.bots.breaker_watch",
     "app.bots.tier_enforcer",
@@ -373,7 +372,6 @@ def start(mod: str) -> subprocess.Popen:
     print(f"[START] {mod}")
     send_tg(f"✅ Bot started: {mod.split('.')[-1]} is now running.")
 
-    # Use ROOT_DIR as the working directory so imports and paths are stable
     return subprocess.Popen(
         [sys.executable, "-m", mod],
         cwd=str(ROOT_DIR),
@@ -408,17 +406,17 @@ def main() -> None:
     print(f"Bybit base:   {BYBIT_BASE}")
     print(f"Heartbeat:    {HEARTBEAT_INTERVAL} sec")
 
-    # 1) Subaccount status check + boot report
+    # 1) Subaccount status check + boot report to main
     try:
-        subs = check_all_subaccounts()
+        subs_status = check_all_subaccounts()
     except Exception as e:
-        subs = []
+        subs_status = []
         send_tg(f"⚠️ Subaccount check failed: {type(e).__name__}")
-    if subs:
-        boot_msg = format_boot_report(subs, BOTS)
+    if subs_status:
+        boot_msg = format_boot_report(subs_status, BOTS)
         send_tg(boot_msg)
 
-    # 1b) Notify all sub-bots that they are "online"
+    # 1b) Per-sub "online" notifications via each sub's own TG bot
     notify_sub_bots_online()
 
     # 2) Start all bots
