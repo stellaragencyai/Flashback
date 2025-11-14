@@ -25,8 +25,12 @@ KEY_READ   = os.getenv("BYBIT_MAIN_READ_KEY", "")
 SEC_READ   = os.getenv("BYBIT_MAIN_READ_SECRET", "")
 KEY_TRADE  = os.getenv("BYBIT_MAIN_TRADE_KEY", "")
 SEC_TRADE  = os.getenv("BYBIT_MAIN_TRADE_SECRET", "")
-KEY_XFER   = os.getenv("BYBIT_MAIN_TRANSFER_KEY", "")
-SEC_XFER   = os.getenv("BYBIT_MAIN_TRANSFER_SECRET", "")
+
+# Transfer key (optional, falls back to trade key if not provided)
+RAW_XFER_KEY    = os.getenv("BYBIT_MAIN_TRANSFER_KEY", "")
+RAW_XFER_SECRET = os.getenv("BYBIT_MAIN_TRANSFER_SECRET", "")
+KEY_XFER = RAW_XFER_KEY or KEY_TRADE
+SEC_XFER = RAW_XFER_SECRET or SEC_TRADE
 
 # Telegram (legacy basic sender; high-volume bots should use notifier_bot)
 TG_TOKEN_MAIN   = os.getenv("TG_TOKEN_MAIN", "")
@@ -597,6 +601,30 @@ def ensure_tp_ladder_stable(symbol: str, side_now: str, entry_px: Decimal, total
 # --------- Internal Transfers (drip) ----------
 
 def inter_transfer_usdt_to_sub(uid: str, amount: Decimal) -> Dict[str, Any]:
+    """
+    Internal UNIFIED -> UNIFIED transfer from main to subaccount.
+
+    Uses BYBIT_MAIN_TRANSFER_KEY/SECRET if set, otherwise falls back
+    to BYBIT_MAIN_TRADE_KEY/SECRET. If neither is available, logs and raises.
+    """
+    if amount <= 0:
+        return {
+            "skipped": True,
+            "reason": "non-positive amount",
+            "uid": str(uid),
+            "amount": str(amount),
+        }
+
+    key = KEY_XFER
+    secret = SEC_XFER
+
+    if not key or not secret:
+        # Absolutely no usable key; this is a config bug.
+        send_tg(f"[DRIP] No transfer-capable API key configured; cannot send {amount} USDT to sub {uid}.")
+        raise RuntimeError(
+            "No transfer API key/secret configured (BYBIT_MAIN_TRANSFER_* or BYBIT_MAIN_TRADE_*)."
+        )
+
     body = {
         "transferId": _ts(),
         "coin": "USDT",
@@ -605,7 +633,13 @@ def inter_transfer_usdt_to_sub(uid: str, amount: Decimal) -> Dict[str, Any]:
         "toAccountType": "UNIFIED",
         "toMemberId": str(uid),
     }
-    return bybit_post("/v5/asset/transfer/inter-transfer", body, key=KEY_XFER, secret=SEC_XFER)
+    # Explicitly use transfer-capable key/secret
+    return bybit_post(
+        "/v5/asset/transfer/inter-transfer",
+        body,
+        key=key,
+        secret=secret,
+    )
 
 # --------- Utility: qty from notional % ----------
 
