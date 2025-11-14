@@ -1,16 +1,25 @@
 # app/bots/trade_journal.py
-# Flashback — Trade Journal (Main, journal-bot + hardened)
+# Flashback — Trade Journal (Main, v2 — richer metrics + emoji-heavy journal)
 #
 # What it does
 # - Streams executions with a persistent cursor so we don't miss partials.
 # - Classifies each new fill as ENTRY/ADD or PARTIAL EXIT based on current position side.
-# - On first entry per symbol: captures an OPEN snapshot (entry, size, lev, margin, SL, TP grid).
-# - On partial exits: sends PnL-ish updates (based on execs) and remaining size from positions.
-# - On full close (size -> 0): fetches closed PnL, composes a final trade summary, appends JSONL.
-#
-# Assumptions
-# - Linear USDT perps, Unified, CROSS. Keys and Telegram set in .env.
-# - flashback_common has time-sync + retry patch.
+# - On first entry per symbol: captures a rich OPEN snapshot:
+#       • symbol, side, direction (LONG/SHORT)
+#       • entry_price, size, leverage, init_margin
+#       • stop_loss, tp_prices, avg_rr_5
+#       • equity_at_open, entry_notional_usd
+#       • risk_per_unit, risk_usd, potential_reward_usd
+#       • entry_order_type (Market/Limit/..) and entry_liquidity (MAKER/TAKER)
+#       • timestamps: ts_open_ms, ts_open_iso
+#       • num_adds, num_partials
+# - On partial exits: sends PnL-ish updates with remaining size.
+# - On full close (size -> 0): fetches closed PnL, composes a final trade summary,
+#   appends JSONL with:
+#       • ts_close_ms, ts_close_iso
+#       • duration_ms, duration_human
+#       • realized_pnl, realized_rr, result (WIN/LOSS/BREAKEVEN)
+#       • equity_after_close
 #
 # Files
 # - app/state/journal.jsonl         (append-only ledger of closed trades)
@@ -19,7 +28,7 @@
 
 import time
 import traceback
-from decimal import Decimal
+from decimal import Decimal, ROUND_DOWN
 from pathlib import Path
 from typing import Dict, Tuple, List, Optional
 
@@ -45,7 +54,7 @@ OPEN_STATE     = Path("app/state/journal_open.json")
 
 # Journal metadata
 ACCOUNT_LABEL     = "MAIN"
-JOURNAL_VERSION   = 1
+JOURNAL_VERSION   = 2
 
 # Use dedicated journal notifier channel
 tg = get_notifier("journal")
@@ -64,10 +73,23 @@ except Exception:
 def _now_ms() -> int:
     return int(time.time() * 1000)
 
+
+def _to_iso(ts_ms: int) -> str:
+    """
+    Convert epoch ms to local ISO-ish string.
+    Uses localtime; TZ from OS / env.
+    """
+    try:
+        return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(ts_ms / 1000))
+    except Exception:
+        return str(ts_ms)
+
+
 def _write_jsonl(row: dict) -> None:
     JOURNAL_LEDGER.parent.mkdir(parents=True, exist_ok=True)
     with JOURNAL_LEDGER.open("ab") as f:
         f.write(orjson.dumps(row) + b"\n")
+
 
 def _load_cursor() -> Optional[str]:
     try:
@@ -77,9 +99,11 @@ def _load_cursor() -> Optional[str]:
     except Exception:
         return None
 
+
 def _save_cursor(cur: Optional[str]) -> None:
     CURSOR_PATH.parent.mkdir(parents=True, exist_ok=True)
     CURSOR_PATH.write_bytes(orjson.dumps({"cursor": cur or ""}))
+
 
 def _load_open_state() -> Dict[str, dict]:
     try:
@@ -87,9 +111,11 @@ def _load_open_state() -> Dict[str, dict]:
     except Exception:
         return {}
 
+
 def _save_open_state(state: Dict[str, dict]) -> None:
     OPEN_STATE.parent.mkdir(parents=True, exist_ok=True)
     OPEN_STATE.write_bytes(orjson.dumps(state))
+
 
 def _human_dur(ms: int) -> str:
     s = ms // 1000
@@ -100,6 +126,22 @@ def _human_dur(ms: int) -> str:
     if m:
         return f"{m}m {s}s"
     return f"{s}s"
+
+
+def _direction_from_side(side: str) -> str:
+    side = (side or "").strip().lower()
+    if side == "buy":
+        return "LONG"
+    if side == "sell":
+        return "SHORT"
+    return "UNKNOWN"
+
+
+def _fmt_dec(x: Optional[Decimal], places: int = 2) -> Optional[str]:
+    if x is None:
+        return None
+    q = Decimal("1").scaleb(-places)  # 10^-places
+    return str(x.quantize(q, rounding=ROUND_DOWN))
 
 # ---------- grid inference (fallback if TPs not yet visible) ----------
 
@@ -130,6 +172,7 @@ def _kline_infer_grid(symbol: str, side_now: str, entry: Decimal) -> Tuple[Decim
             tps = [psnap(entry - i * step, tick) for i in range(1, 6)]
     return sl, tps
 
+
 def _avg_rr(entry: Decimal, sl: Optional[Decimal], tps: List[Decimal]) -> Optional[Decimal]:
     if sl is None or entry == sl:
         return None
@@ -139,6 +182,7 @@ def _avg_rr(entry: Decimal, sl: Optional[Decimal], tps: List[Decimal]) -> Option
     vals = [abs(tp - entry) / R for tp in tps[:5]]
     return sum(vals) / Decimal(len(vals)) if vals else None
 
+
 def _get_stop_from_position(p: dict) -> Optional[Decimal]:
     sl = p.get("stopLoss")
     try:
@@ -146,12 +190,14 @@ def _get_stop_from_position(p: dict) -> Optional[Decimal]:
     except Exception:
         return None
 
+
 def _leverage_from_position(p: dict) -> Optional[Decimal]:
     try:
         v = p.get("leverage")
         return Decimal(str(v)) if v not in (None, "", "0") else None
     except Exception:
         return None
+
 
 def _margin_from_position(p: dict) -> Optional[Decimal]:
     try:
@@ -169,6 +215,24 @@ def _margin_from_position(p: dict) -> Optional[Decimal]:
         pass
     return None
 
+
+def _risk_from_snapshot(entry: Decimal, sl: Optional[Decimal], size: Decimal, avg_rr: Optional[Decimal]) -> Tuple[Optional[Decimal], Optional[Decimal], Optional[Decimal]]:
+    """
+    Returns (risk_per_unit, risk_usd, potential_reward_usd) as Decimals or None.
+    risk_per_unit = |entry - sl|
+    risk_usd       = risk_per_unit * size
+    potential      = risk_usd * avg_rr (if avg_rr not None)
+    """
+    if sl is None or entry == sl or size <= 0:
+        return None, None, None
+    risk_per_unit = abs(entry - sl)
+    risk_usd = risk_per_unit * size
+    if avg_rr is not None:
+        potential_reward = risk_usd * avg_rr
+    else:
+        potential_reward = None
+    return risk_per_unit, risk_usd, potential_reward
+
 # ---------- executions stream ----------
 
 def _fetch_exec_batch(cursor: Optional[str]) -> Tuple[List[dict], Optional[str]]:
@@ -181,6 +245,7 @@ def _fetch_exec_batch(cursor: Optional[str]) -> Tuple[List[dict], Optional[str]]
     next_cur = result.get("nextPageCursor") or None
     return rows, next_cur
 
+
 def _exec_is_trade(e: dict) -> bool:
     # Filter to true trade executions
     try:
@@ -188,11 +253,27 @@ def _exec_is_trade(e: dict) -> bool:
     except Exception:
         return False
 
+
 def _side_from_exec(e: dict) -> Optional[str]:
     s = e.get("side")
     if s in ("Buy", "Sell"):
         return s
     return None
+
+
+def _entry_order_meta(e: dict) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Extract order type and liquidity from an execution row, if present.
+    """
+    otype = e.get("orderType") or None
+    liq = None
+    if "isMaker" in e:
+        try:
+            is_maker = str(e.get("isMaker")).lower() == "true"
+            liq = "MAKER" if is_maker else "TAKER"
+        except Exception:
+            liq = None
+    return otype, liq
 
 # ---------- helpers for final pnl ----------
 
@@ -213,7 +294,7 @@ def _closed_pnl_latest(symbol: str) -> Tuple[Optional[Decimal], Optional[Decimal
 # ---------- main loop ----------
 
 def loop():
-    tg.info("📝 Flashback Trade Journal started.")
+    tg.info("📝📒 Flashback Trade Journal v2 started.")
     open_state: Dict[str, dict] = _load_open_state()
     cursor = _load_cursor()
 
@@ -229,37 +310,58 @@ def loop():
 
     pos_now = _pos_map()
 
-    # On boot, announce any already-open positions
+    # On boot, announce any already-open positions (best-effort snapshot)
     for sym, p in pos_now.items():
         if sym not in open_state:
             entry = Decimal(str(p["avgPrice"]))
             size  = Decimal(str(p["size"]))
             side  = p["side"]
+            direction = _direction_from_side(side)
             sl    = _get_stop_from_position(p)
             sl_f, tps_f = _kline_infer_grid(sym, side, entry)
             if sl is None:
                 sl = sl_f
             rr = _avg_rr(entry, sl, tps_f)
+            eq_open = get_equity_usdt()
+            risk_per_unit, risk_usd, potential_reward = _risk_from_snapshot(entry, sl, size, rr)
+
+            ts_open = _now_ms()
             snap = {
-                "ts_open": _now_ms(),
+                "ts_open": ts_open,
+                "ts_open_iso": _to_iso(ts_open),
                 "symbol": sym,
                 "side": side,
+                "direction": direction,
                 "entry_price": str(entry),
                 "size": str(size),
+                "entry_notional_usd": _fmt_dec(entry * size, places=2),
                 "leverage": str(_leverage_from_position(p)) if _leverage_from_position(p) is not None else None,
                 "init_margin": str(_margin_from_position(p)) if _margin_from_position(p) is not None else None,
                 "stop_loss": str(sl) if sl is not None else None,
                 "tp_prices": [str(x) for x in tps_f],
                 "avg_rr_5": str(rr) if rr is not None else None,
+                "risk_per_unit": _fmt_dec(risk_per_unit, places=4),
+                "risk_usd": _fmt_dec(risk_usd, places=2),
+                "potential_reward_usd": _fmt_dec(potential_reward, places=2),
+                "equity_at_open": _fmt_dec(eq_open, places=2),
+                "entry_order_type": None,
+                "entry_liquidity": None,
+                "num_adds": 0,
+                "num_partials": 0,
                 "account": ACCOUNT_LABEL,
                 "journal_version": JOURNAL_VERSION,
             }
             open_state[sym] = snap
+            _save_open_state(open_state)
+
             tg.trade(
-                f"🟢 OPEN {sym} {side} @ {snap['entry_price']} "
-                f"| lev {snap.get('leverage')} | size {snap['size']} "
-                f"| SL {snap.get('stop_loss')} | TP {', '.join(snap['tp_prices'])}"
+                f"🟢🚀 NEW TRADE | {sym} {direction} @ {snap['entry_price']} "
+                f"📏 size {snap['size']} | ⚙️ lev {snap.get('leverage')} "
+                f"🛡 SL {snap.get('stop_loss')} | 💰 R {snap.get('risk_usd')} usd "
+                f"📊 RR~{snap.get('avg_rr_5')} | 🎯 POT {snap.get('potential_reward_usd')} usd "
+                f"🎯 TP {', '.join(snap['tp_prices'])}"
             )
+
     _save_open_state(open_state)
 
     while True:
@@ -308,76 +410,151 @@ def loop():
                             entry = Decimal(str(pos["avgPrice"]))
                             size  = Decimal(str(pos["size"]))
                             side_now = pos["side"]
+                            direction = _direction_from_side(side_now)
                             sl = _get_stop_from_position(pos)
                             sl_f, tps_f = _kline_infer_grid(symbol, side_now, entry)
                             if sl is None:
                                 sl = sl_f
                             rr = _avg_rr(entry, sl, tps_f)
+                            eq_open = get_equity_usdt()
+                            risk_per_unit, risk_usd, potential_reward = _risk_from_snapshot(entry, sl, size, rr)
+                            order_type, liquidity = _entry_order_meta(e)
+
+                            ts_open = ts or _now_ms()
                             snap = {
-                                "ts_open": ts or _now_ms(),
+                                "ts_open": ts_open,
+                                "ts_open_iso": _to_iso(ts_open),
                                 "symbol": symbol,
                                 "side": side_now,
+                                "direction": direction,
                                 "entry_price": str(entry),
                                 "size": str(size),
+                                "entry_notional_usd": _fmt_dec(entry * size, places=2),
                                 "leverage": str(_leverage_from_position(pos)) if _leverage_from_position(pos) is not None else None,
                                 "init_margin": str(_margin_from_position(pos)) if _margin_from_position(pos) is not None else None,
                                 "stop_loss": str(sl) if sl is not None else None,
                                 "tp_prices": [str(x) for x in tps_f],
                                 "avg_rr_5": str(rr) if rr is not None else None,
+                                "risk_per_unit": _fmt_dec(risk_per_unit, places=4),
+                                "risk_usd": _fmt_dec(risk_usd, places=2),
+                                "potential_reward_usd": _fmt_dec(potential_reward, places=2),
+                                "equity_at_open": _fmt_dec(eq_open, places=2),
+                                "entry_order_type": order_type,
+                                "entry_liquidity": liquidity,
+                                "num_adds": 0,
+                                "num_partials": 0,
                                 "account": ACCOUNT_LABEL,
                                 "journal_version": JOURNAL_VERSION,
                             }
                             open_state[symbol] = snap
                             _save_open_state(open_state)
+
                             tg.trade(
-                                f"🟢 OPEN {symbol} {side_now} @ {snap['entry_price']} "
-                                f"| lev {snap.get('leverage')} | size {snap['size']} "
-                                f"| SL {snap.get('stop_loss')} | TP {', '.join(snap['tp_prices'])}"
+                                f"🟢🚀 NEW TRADE | {symbol} {direction} @ {snap['entry_price']} "
+                                f"📏 size {snap['size']} | ⚙️ lev {snap.get('leverage')} "
+                                f"🎛 {order_type or 'order'} | 🔁 {liquidity or 'liquidity'} "
+                                f"🛡 SL {snap.get('stop_loss')} | 💰 R {snap.get('risk_usd')} usd "
+                                f"📊 RR~{snap.get('avg_rr_5')} | 🎯 POT {snap.get('potential_reward_usd')} usd "
+                                f"🎯 TP {', '.join(snap['tp_prices'])}"
                             )
                         else:
                             # No position yet (race), still emit a lightweight ADD/ENTRY
-                            tg.trade(f"🟢 ENTRY {symbol} {side_exec} fill {qty} @ {px}")
+                            tg.trade(f"🟢✨ ENTRY {symbol} {side_exec} fill {qty} @ {px}")
                     else:
                         # It’s an add-on to an existing position
-                        tg.trade(f"➕ ADD {symbol} {side_exec} fill {qty} @ {px} | size now ≈ {pos_size}")
+                        snap = open_state.get(symbol, {})
+                        adds = int(snap.get("num_adds", 0)) + 1
+                        snap["num_adds"] = adds
+                        open_state[symbol] = snap
+                        _save_open_state(open_state)
+
+                        tg.trade(
+                            f"➕📈 ADD {symbol} {side_exec} fill {qty} @ {px} "
+                            f"| 📏 size now ≈ {pos_size} | 🔁 adds {adds}"
+                        )
 
                 # 3b) PARTIAL EXIT
                 if is_exit_partial:
+                    snap = open_state.get(symbol, {})
+                    partials = int(snap.get("num_partials", 0)) + 1
+                    snap["num_partials"] = partials
+                    open_state[symbol] = snap
+                    _save_open_state(open_state)
+
                     # Remaining size from current position map is authoritative
-                    tg.trade(f"➖ PARTIAL EXIT {symbol} {side_exec} fill {qty} @ {px} | remaining ≈ {pos_size}")
+                    tg.trade(
+                        f"➖📉 PARTIAL EXIT {symbol} {side_exec} fill {qty} @ {px} "
+                        f"| 📏 remaining ≈ {pos_size} | ✂️ partials {partials}"
+                    )
 
             # 4) Detect full closures via positions diff and write ledger rows
             cur_syms = set(pos_now.keys())
             tracked_syms = list(open_state.keys())
-            for sym in tracked_syms:
+            for sym in (tracked_syms := tracked_syms):
                 if sym not in cur_syms:
                     # Position fully closed -> fetch closed-PnL and finalize
                     open_row = open_state.get(sym) or {}
                     pnl, exit_px = _closed_pnl_latest(sym)
                     now_ms = _now_ms()
                     dur = now_ms - int(open_row.get("ts_open", now_ms))
+
+                    risk_usd_dec: Optional[Decimal] = None
+                    try:
+                        if open_row.get("risk_usd") is not None:
+                            risk_usd_dec = Decimal(str(open_row["risk_usd"]))
+                    except Exception:
+                        risk_usd_dec = None
+
+                    realized_rr: Optional[Decimal] = None
+                    if pnl is not None and risk_usd_dec is not None and risk_usd_dec > 0:
+                        realized_rr = pnl / risk_usd_dec
+
+                    if pnl is None:
+                        result = "UNKNOWN"
+                    elif pnl > 0:
+                        result = "WIN"
+                    elif pnl < 0:
+                        result = "LOSS"
+                    else:
+                        result = "BREAKEVEN"
+
+                    eq_after = get_equity_usdt()
+
                     row = {
                         **open_row,
                         "ts_close": now_ms,
+                        "ts_close_iso": _to_iso(now_ms),
                         "duration_ms": dur,
                         "duration_human": _human_dur(dur),
                         "realized_pnl": str(pnl) if pnl is not None else None,
+                        "realized_rr": _fmt_dec(realized_rr, places=2) if realized_rr is not None else None,
+                        "result": result,
                         "exit_price": str(exit_px) if exit_px is not None else None,
-                        "equity_after_close": str(get_equity_usdt()),
+                        "equity_after_close": _fmt_dec(eq_after, places=2),
                         "symbol": sym,
                         "account": open_row.get("account", ACCOUNT_LABEL),
                         "journal_version": open_row.get("journal_version", JOURNAL_VERSION),
                     }
                     _write_jsonl(row)
-                    tg.trade(
-                        "🔴 CLOSE {sym} | PnL {pnl} | exit {exit_px} | dur {dur} | eq {eq}".format(
-                            sym=sym,
-                            pnl=row.get("realized_pnl"),
-                            exit_px=row.get("exit_price"),
-                            dur=row.get("duration_human"),
-                            eq=row.get("equity_after_close"),
-                        )
+
+                    # Pretty close summary
+                    msg = (
+                        "🔴🏁 CLOSE {sym} {direction} | 💵 PnL {pnl} usd "
+                        "| 📊 RR {rr} | ⏱ {dur} | 🏦 eq {eq_open}→{eq_after} "
+                        "| ➕ adds {adds} | ✂️ partials {partials}"
+                    ).format(
+                        sym=sym,
+                        direction=row.get("direction", row.get("side", "?")),
+                        pnl=row.get("realized_pnl"),
+                        rr=row.get("realized_rr"),
+                        dur=row.get("duration_human"),
+                        eq_open=row.get("equity_at_open"),
+                        eq_after=row.get("equity_after_close"),
+                        adds=row.get("num_adds", 0),
+                        partials=row.get("num_partials", 0),
                     )
+                    tg.trade(msg)
+
                     open_state.pop(sym, None)
                     _save_open_state(open_state)
 
