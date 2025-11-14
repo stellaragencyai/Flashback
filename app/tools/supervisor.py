@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Flashback — Supervisor v4.2 (Root-aware + Subaccount Status + Central + Sub-bot Online Pings)
+# Flashback — Supervisor v4.3 (Root-aware + Subaccount Status + Central + Sub-bot Online Pings)
 #
 # What this does:
 # - Forces project root as working directory so imports and .env are consistent.
@@ -7,6 +7,7 @@
 # - On startup:
 #     • Checks Bybit connectivity for MAIN + flashback01..flashback10
 #     • Sends a Telegram "boot report" with subaccount status + planned bots
+#     • Sends a per-subaccount "online" confirmation to your MAIN Telegram chat
 #     • Sends a "bot online" confirmation to every configured subaccount Telegram bot
 # - Keeps all core bots running; auto-restarts on crash.
 # - Logs each bot's stdout/stderr to app/logs/*.log
@@ -57,7 +58,7 @@ from dotenv import load_dotenv
 from app.core.notifier_bot import get_notifier
 from app.core.subs import load_subs, send_tg_to_sub
 
-SUPERVISOR_VERSION = "4.2"
+SUPERVISOR_VERSION = "4.3"
 
 # ---------- PATHS & ENV ----------
 
@@ -317,6 +318,32 @@ def format_boot_report(subs: List[Dict[str, str]], bots: List[str]) -> str:
 
     return "\n".join(lines)
 
+# ---------- Central per-subaccount "online" pings ----------
+
+def notify_subaccounts_online_central(subs: List[Dict[str, str]]) -> None:
+    """
+    For every subaccount in 'subs', send an explicit 'online' message
+    to the MAIN Telegram chat when supervisor starts.
+    """
+    if not subs:
+        return
+
+    for s in subs:
+        label = s["label"]
+        status = s["status"]
+        equity = s.get("equity") or ""
+        detail = s.get("detail") or ""
+
+        if status == "OK":
+            eq_str = f" | equity≈{equity}" if equity else ""
+            msg = f"✅ {label} is ONLINE{eq_str}"
+        elif status == "MISSING_CREDS":
+            msg = f"⛔ {label} is missing API creds in .env (cannot confirm online)."
+        else:
+            msg = f"⚠️ {label} Bybit error on startup: {detail}"
+
+        send_tg(msg)
+
 # ---------- Sub-bot "online" notifier ----------
 
 def notify_sub_bots_online() -> None:
@@ -414,9 +441,13 @@ def main() -> None:
     except Exception as e:
         subs = []
         send_tg(f"⚠️ Subaccount check failed: {type(e).__name__}")
+
     if subs:
         boot_msg = format_boot_report(subs, BOTS)
         send_tg(boot_msg)
+
+        # 1a) Explicit per-subaccount "online" messages to MAIN Telegram
+        notify_subaccounts_online_central(subs)
 
     # 1b) Notify all sub-bots that they are "online"
     notify_sub_bots_online()
