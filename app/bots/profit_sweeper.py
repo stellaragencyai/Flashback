@@ -1,5 +1,5 @@
 # app/bots/profit_sweeper.py
-# Flashback — Profit Sweeper (Main, hardened)
+# Flashback — Profit Sweeper (Main, hardened + DRY_RUN)
 #
 # What it does
 # - At your daily cutoff (London time), compute today's realized PnL (USDT) on the main account.
@@ -20,7 +20,14 @@
 #   - Robust SWEEP_ALLOCATION parsing (skips bad chunks, fallback default).
 #   - Defensive cutoff/timezone handling.
 #   - Full traceback logging on unexpected exceptions.
+#
+# Enhancements in this version:
+#   - ROOT-relative state path: state/profit_sweeper_state.json (no more CWD dependency).
+#   - SWEEPER_DRY_RUN env flag:
+#         SWEEPER_DRY_RUN=true  -> simulate all transfers, log only.
+#         SWEEPER_DRY_RUN=false -> perform real Bybit transfers (original behavior).
 
+import os
 import time
 import traceback
 from decimal import Decimal, ROUND_DOWN
@@ -48,10 +55,29 @@ from app.core.notifier_bot import get_notifier
 
 tg = get_notifier("main")
 
-STATE_PATH = Path("app/state/profit_sweeper_state.json")
+# --- Paths & DRY_RUN config ---
+
+# ROOT_DIR = project root: .../Flashback
+ROOT_DIR = Path(__file__).resolve().parents[2]
+STATE_DIR = ROOT_DIR / "state"
+STATE_DIR.mkdir(parents=True, exist_ok=True)
+
+STATE_PATH = STATE_DIR / "profit_sweeper_state.json"
 CATEGORY = "linear"
 POLL_SECONDS = 30       # check time window every 30s
 PAGE_LIMIT = 200        # closed PnL rows per page (we paginate now)
+
+def _parse_bool(val: Optional[str], default: bool) -> bool:
+    if val is None:
+        return default
+    v = val.strip().lower()
+    if v in ("1", "true", "yes", "y", "on"):
+        return True
+    if v in ("0", "false", "no", "n", "off"):
+        return False
+    return default
+
+SWEEPER_DRY_RUN = _parse_bool(os.getenv("SWEEPER_DRY_RUN"), True)
 
 # --- Helpers for time & state ---
 
@@ -177,9 +203,15 @@ def _sum_realized_pnl_today() -> Decimal:
 def _transfer_unified_to_funding_usdt(amount: Decimal) -> bool:
     """
     Universal transfer UNIFIED -> FUNDING for the main account.
+    Honors SWEEPER_DRY_RUN to avoid accidental live moves.
     """
     if amount <= 0:
         return False
+
+    if SWEEPER_DRY_RUN:
+        tg.info(f"[Sweeper] DRY_RUN: would transfer { _fmt_usd(amount) } from UNIFIED -> FUNDING.")
+        return True
+
     body = {
         "transferId": str(int(time.time() * 1000)),
         "coin": "USDT",
@@ -228,7 +260,10 @@ def _parse_allocation(spec: str) -> List[Tuple[Decimal, str]]:
 
     # Fallback if everything was garbage
     if not parts:
-        tg.error(f"[Sweeper] SWEEP_ALLOCATION={spec!r} produced no valid parts; using fallback 75:MAIN,10:FUNDING,15:SUBS.")
+        tg.error(
+            f"[Sweeper] SWEEP_ALLOCATION={spec!r} produced no valid parts; "
+            "using fallback 75:MAIN,10:FUNDING,15:SUBS."
+        )
         parts = [
             (Decimal("75"), "MAIN"),
             (Decimal("10"), "FUNDING"),
@@ -303,7 +338,8 @@ def _sweep_once(today_str: str, state: dict) -> None:
 
         elif dest == "FUNDING":
             ok = _transfer_unified_to_funding_usdt(amt)
-            details.append(f"FUNDING: {_fmt_usd(amt)}{' ✅' if ok else ' ❌'}")
+            suffix = " (DRY_RUN)" if SWEEPER_DRY_RUN else ""
+            details.append(f"FUNDING: {_fmt_usd(amt)}{' ✅' if ok else ' ❌'}{suffix}")
 
         elif dest == "SUBS":
             if not subs:
@@ -326,7 +362,13 @@ def _sweep_once(today_str: str, state: dict) -> None:
 
                 uid = subs[(sub_rr_index + slot) % sub_count]
                 try:
-                    inter_transfer_usdt_to_sub(uid, part)
+                    if SWEEPER_DRY_RUN:
+                        tg.info(
+                            f"[Sweeper] DRY_RUN: would transfer {_fmt_usd(part)} from UNIFIED -> sub UID {uid}."
+                        )
+                    else:
+                        inter_transfer_usdt_to_sub(uid, part)
+
                     sent_total += part
                     remaining -= part
                     used_slots += 1
@@ -337,7 +379,8 @@ def _sweep_once(today_str: str, state: dict) -> None:
             if sub_count > 0 and used_slots > 0:
                 sub_rr_index = (sub_rr_index + used_slots) % sub_count
 
-            details.append(f"SUBS: {_fmt_usd(sent_total)}")
+            suffix = " (DRY_RUN)" if SWEEPER_DRY_RUN else ""
+            details.append(f"SUBS: {_fmt_usd(sent_total)}{suffix}")
 
         else:
             details.append(f"{dest}: {_fmt_usd(amt)} (unknown dest; skipped)")
@@ -351,12 +394,17 @@ def _sweep_once(today_str: str, state: dict) -> None:
         f"Realized: {_fmt_usd(realized)}\n"
         f"Equity:  {_fmt_usd(equity)}\n"
         + "\n".join(f"• {d}" for d in details)
+        + f"\n\nSWEEPER_DRY_RUN: {'ON' if SWEEPER_DRY_RUN else 'OFF'}"
     )
     tg.info(msg)
 
 
 def loop():
-    tg.info("🧾 Flashback Profit Sweeper started.")
+    tg.info(
+        "🧾 Flashback Profit Sweeper started.\n"
+        f"SWEEPER_DRY_RUN: {'ON' if SWEEPER_DRY_RUN else 'OFF'}\n"
+        f"State file: {STATE_PATH}"
+    )
     state = _load_state()
 
     while True:
