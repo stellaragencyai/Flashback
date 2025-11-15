@@ -1,5 +1,5 @@
 # app/bots/trade_journal.py
-# Flashback — Trade Journal (Main, v2 — richer metrics + emoji-heavy journal)
+# Flashback — Trade Journal (Main, v3 — richer metrics + trade rating)
 #
 # What it does
 # - Streams executions with a persistent cursor so we don't miss partials.
@@ -20,6 +20,7 @@
 #       • duration_ms, duration_human
 #       • realized_pnl, realized_rr, result (WIN/LOSS/BREAKEVEN)
 #       • equity_after_close
+#       • rating_score (1–10) + rating_reason
 #
 # Files
 # - app/state/journal.jsonl         (append-only ledger of closed trades)
@@ -30,7 +31,7 @@ import time
 import traceback
 from decimal import Decimal, ROUND_DOWN
 from pathlib import Path
-from typing import Dict, Tuple, List, Optional
+from typing import Dict, Tuple, List, Optional, Any
 
 import orjson
 
@@ -54,7 +55,7 @@ OPEN_STATE     = Path("app/state/journal_open.json")
 
 # Journal metadata
 ACCOUNT_LABEL     = "MAIN"
-JOURNAL_VERSION   = 2
+JOURNAL_VERSION   = 3  # bumped for rating
 
 # Use dedicated journal notifier channel
 tg = get_notifier("journal")
@@ -216,7 +217,12 @@ def _margin_from_position(p: dict) -> Optional[Decimal]:
     return None
 
 
-def _risk_from_snapshot(entry: Decimal, sl: Optional[Decimal], size: Decimal, avg_rr: Optional[Decimal]) -> Tuple[Optional[Decimal], Optional[Decimal], Optional[Decimal]]:
+def _risk_from_snapshot(
+    entry: Decimal,
+    sl: Optional[Decimal],
+    size: Decimal,
+    avg_rr: Optional[Decimal],
+) -> Tuple[Optional[Decimal], Optional[Decimal], Optional[Decimal]]:
     """
     Returns (risk_per_unit, risk_usd, potential_reward_usd) as Decimals or None.
     risk_per_unit = |entry - sl|
@@ -232,6 +238,99 @@ def _risk_from_snapshot(entry: Decimal, sl: Optional[Decimal], size: Decimal, av
     else:
         potential_reward = None
     return risk_per_unit, risk_usd, potential_reward
+
+# ---------- trade rating ----------
+
+def _rate_trade(
+    *,
+    result: str,
+    realized_rr: Optional[Decimal],
+    risk_usd: Optional[Decimal],
+    duration_ms: int,
+    num_adds: int,
+    num_partials: int,
+) -> Tuple[int, str]:
+    """
+    Rate a trade 1–10 based on:
+      - realized_rr (primary)
+      - result (WIN/LOSS/BREAKEVEN)
+      - duration (ultra-short vs more "patient")
+      - structural noise (adds/partials count)
+
+    This is not "holy truth", it's a heuristic score so AI & human can
+    quickly spot A+ vs trash trades.
+    """
+    # Base from result
+    base = 5.0
+    res = (result or "UNKNOWN").upper()
+
+    # RR contribution
+    rr_val: Optional[float] = None
+    if realized_rr is not None:
+        try:
+            rr_val = float(realized_rr)
+        except Exception:
+            rr_val = None
+
+    if rr_val is not None:
+        if rr_val >= 3.0:
+            base = 9.0
+        elif rr_val >= 2.0:
+            base = 8.0
+        elif rr_val >= 1.0:
+            base = 7.0
+        elif rr_val >= 0.5:
+            base = 6.0
+        elif rr_val >= 0.0:
+            base = 5.0
+        elif rr_val > -0.5:
+            base = 4.0
+        elif rr_val > -1.0:
+            base = 3.0
+        elif rr_val > -2.0:
+            base = 2.0
+        else:
+            base = 1.0
+    else:
+        # Fallback if RR missing but we know result
+        if res == "WIN":
+            base = 7.0
+        elif res == "LOSS":
+            base = 4.0
+        elif res == "BREAKEVEN":
+            base = 5.0
+
+    # Duration adjustment
+    # < 30s: likely noise scalp -> slight penalty
+    # > 2h with positive RR: small bonus
+    dur_s = duration_ms / 1000.0
+    if dur_s < 30:
+        base -= 0.5
+    elif dur_s > 7200 and rr_val is not None and rr_val >= 2.0:
+        base += 0.5
+
+    # Adds/partials: too much chopping reduces rating a bit
+    churn = num_adds + num_partials
+    if churn > 4:
+        base -= min(2.0, 0.25 * (churn - 4))
+
+    # Clamp and round
+    score = int(max(1, min(10, round(base))))
+
+    # Build reason text
+    reasons: List[str] = []
+    if rr_val is not None:
+        reasons.append(f"RR≈{rr_val:.2f}")
+    reasons.append(f"result={res}")
+    reasons.append(f"duration={int(dur_s)}s")
+    reasons.append(f"adds={num_adds},partials={num_partials}")
+    if risk_usd is not None:
+        try:
+            reasons.append(f"risk≈{float(risk_usd):.2f}usd")
+        except Exception:
+            pass
+
+    return score, "; ".join(reasons)
 
 # ---------- executions stream ----------
 
@@ -294,7 +393,7 @@ def _closed_pnl_latest(symbol: str) -> Tuple[Optional[Decimal], Optional[Decimal
 # ---------- main loop ----------
 
 def loop():
-    tg.info("📝📒 Flashback Trade Journal v2 started.")
+    tg.info("📝📒 Flashback Trade Journal v3 started.")
     open_state: Dict[str, dict] = _load_open_state()
     cursor = _load_cursor()
 
@@ -452,7 +551,7 @@ def loop():
                             tg.trade(
                                 f"🟢🚀 NEW TRADE | {symbol} {direction} @ {snap['entry_price']} "
                                 f"📏 size {snap['size']} | ⚙️ lev {snap.get('leverage')} "
-                                f"🎛 {order_type or 'order'} | 🔁 {liquidity or 'liquidity'} "
+                                f"🎛 {order_type or 'order'} | 🔁 {liquidity or 'liq?'} "
                                 f"🛡 SL {snap.get('stop_loss')} | 💰 R {snap.get('risk_usd')} usd "
                                 f"📊 RR~{snap.get('avg_rr_5')} | 🎯 POT {snap.get('potential_reward_usd')} usd "
                                 f"🎯 TP {', '.join(snap['tp_prices'])}"
@@ -490,7 +589,7 @@ def loop():
             # 4) Detect full closures via positions diff and write ledger rows
             cur_syms = set(pos_now.keys())
             tracked_syms = list(open_state.keys())
-            for sym in (tracked_syms := tracked_syms):
+            for sym in tracked_syms:
                 if sym not in cur_syms:
                     # Position fully closed -> fetch closed-PnL and finalize
                     open_row = open_state.get(sym) or {}
@@ -498,6 +597,7 @@ def loop():
                     now_ms = _now_ms()
                     dur = now_ms - int(open_row.get("ts_open", now_ms))
 
+                    # Parse risk_usd back to Decimal if present
                     risk_usd_dec: Optional[Decimal] = None
                     try:
                         if open_row.get("risk_usd") is not None:
@@ -520,7 +620,20 @@ def loop():
 
                     eq_after = get_equity_usdt()
 
-                    row = {
+                    num_adds = int(open_row.get("num_adds", 0) or 0)
+                    num_partials = int(open_row.get("num_partials", 0) or 0)
+
+                    # Compute rating
+                    rating_score, rating_reason = _rate_trade(
+                        result=result,
+                        realized_rr=realized_rr,
+                        risk_usd=risk_usd_dec,
+                        duration_ms=dur,
+                        num_adds=num_adds,
+                        num_partials=num_partials,
+                    )
+
+                    row: Dict[str, Any] = {
                         **open_row,
                         "ts_close": now_ms,
                         "ts_close_iso": _to_iso(now_ms),
@@ -534,15 +647,20 @@ def loop():
                         "symbol": sym,
                         "account": open_row.get("account", ACCOUNT_LABEL),
                         "journal_version": open_row.get("journal_version", JOURNAL_VERSION),
+                        "rating_score": rating_score,
+                        "rating_reason": rating_reason,
                     }
                     _write_jsonl(row)
 
                     # Pretty close summary
+                    emoji_result = "✅💰" if result == "WIN" else "❌💸" if result == "LOSS" else "⚪️😐"
                     msg = (
-                        "🔴🏁 CLOSE {sym} {direction} | 💵 PnL {pnl} usd "
+                        "{flag} CLOSE {sym} {direction} | 💵 PnL {pnl} usd "
                         "| 📊 RR {rr} | ⏱ {dur} | 🏦 eq {eq_open}→{eq_after} "
-                        "| ➕ adds {adds} | ✂️ partials {partials}"
+                        "| ➕ adds {adds} | ✂️ partials {partials} "
+                        "| ⭐ rating {rating}/10"
                     ).format(
+                        flag=f"🔴🏁{emoji_result}",
                         sym=sym,
                         direction=row.get("direction", row.get("side", "?")),
                         pnl=row.get("realized_pnl"),
@@ -550,8 +668,9 @@ def loop():
                         dur=row.get("duration_human"),
                         eq_open=row.get("equity_at_open"),
                         eq_after=row.get("equity_after_close"),
-                        adds=row.get("num_adds", 0),
-                        partials=row.get("num_partials", 0),
+                        adds=num_adds,
+                        partials=num_partials,
+                        rating=rating_score,
                     )
                     tg.trade(msg)
 
