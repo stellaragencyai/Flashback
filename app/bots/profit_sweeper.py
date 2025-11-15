@@ -36,7 +36,34 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 
 import pytz
-import orjson
+
+# --- Constants ---
+PAGE_LIMIT = 200
+CATEGORY = "linear"  # You may want to adjust this if needed
+POLL_SECONDS = 30  # Polling interval in seconds when not in cutoff window
+
+# orjson compatibility wrapper: prefer orjson if installed, otherwise fall back to stdlib json.
+try:
+    import orjson as _orjson  # type: ignore
+
+    def orjson_loads(b):
+        return _orjson.loads(b)
+
+    def orjson_dumps(obj):
+        return _orjson.dumps(obj)
+
+except Exception:
+    import json as _json
+
+    def orjson_loads(b):
+        # accept bytes or str like orjson
+        if isinstance(b, (bytes, bytearray)):
+            b = b.decode()
+        return _json.loads(b)
+
+    def orjson_dumps(obj):
+        # return bytes to mimic orjson.dumps behaviour
+        return _json.dumps(obj, separators=(",", ":"), ensure_ascii=False).encode()
 
 from app.core.flashback_common import (
     bybit_get,
@@ -60,27 +87,7 @@ tg = get_notifier("main")
 # ROOT_DIR = project root: .../Flashback
 ROOT_DIR = Path(__file__).resolve().parents[2]
 STATE_DIR = ROOT_DIR / "state"
-STATE_DIR.mkdir(parents=True, exist_ok=True)
-
 STATE_PATH = STATE_DIR / "profit_sweeper_state.json"
-CATEGORY = "linear"
-POLL_SECONDS = 30       # check time window every 30s
-PAGE_LIMIT = 200        # closed PnL rows per page (we paginate now)
-
-def _parse_bool(val: Optional[str], default: bool) -> bool:
-    if val is None:
-        return default
-    v = val.strip().lower()
-    if v in ("1", "true", "yes", "y", "on"):
-        return True
-    if v in ("0", "false", "no", "n", "off"):
-        return False
-    return default
-
-SWEEPER_DRY_RUN = _parse_bool(os.getenv("SWEEPER_DRY_RUN"), True)
-
-# --- Helpers for time & state ---
-
 
 def _load_state() -> dict:
     """
@@ -91,7 +98,40 @@ def _load_state() -> dict:
     """
     try:
         if STATE_PATH.exists():
-            return orjson.loads(STATE_PATH.read_bytes())
+            return orjson_loads(STATE_PATH.read_bytes())
+    except Exception:
+        pass
+    return {
+        "last_swept_date": None,
+        "sub_rr_index": 0,
+    }
+
+def _parse_bool(val, default=False):
+    """
+    Parse a boolean from environment variable strings.
+    Accepts: "1", "true", "yes", "on" (case-insensitive) as True.
+    """
+    if val is None:
+        return default
+    if isinstance(val, bool):
+        return val
+    return str(val).strip().lower() in ("1", "true", "yes", "on")
+
+SWEEPER_DRY_RUN = _parse_bool(os.getenv("SWEEPER_DRY_RUN"), True)
+def _save_state(state: dict) -> None:
+    STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    STATE_PATH.write_bytes(orjson_dumps(state))
+
+def _load_state() -> dict:
+    """
+    Load sweeper state from disk.
+    Keys:
+      - last_swept_date: "YYYY-MM-DD" or None
+      - sub_rr_index: int (next starting index in SUB_UIDS_ROUND_ROBIN)
+    """
+    try:
+        if STATE_PATH.exists():
+            return orjson_loads(STATE_PATH.read_bytes())
     except Exception:
         pass
     return {
@@ -102,7 +142,7 @@ def _load_state() -> dict:
 
 def _save_state(state: dict) -> None:
     STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    STATE_PATH.write_bytes(orjson.dumps(state))
+    STATE_PATH.write_bytes(orjson_dumps(state))
 
 
 def _get_tz():

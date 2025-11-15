@@ -43,7 +43,16 @@ import math
 from pathlib import Path
 from typing import Dict, List, Tuple, Any, Optional
 
-import requests
+try:
+    import requests  # type: ignore
+    _HAS_REQUESTS = True
+except Exception:
+    # Fallback to stdlib if `requests` is not installed in the environment
+    import urllib.request as _urllib_request
+    import urllib.parse as _urllib_parse
+    import json as _json
+    _HAS_REQUESTS = False
+
 from dotenv import load_dotenv
 
 # AI logging
@@ -106,15 +115,12 @@ def tg_info(msg: str) -> None:
     except Exception:
         print(f"[signal_engine][TG error] {msg}")
 
-
 def tg_error(msg: str) -> None:
     try:
         tg.error(msg)
     except Exception:
         print(f"[signal_engine][TG error] {msg}")
 
-
-# ---------- Bybit Market Data ----------
 
 def fetch_recent_klines(
     symbol: str,
@@ -135,9 +141,21 @@ def fetch_recent_klines(
         "limit": str(limit),
     }
 
-    resp = requests.get(url, params=params, timeout=10)
-    resp.raise_for_status()
-    data = resp.json()
+    if _HAS_REQUESTS:
+        resp = requests.get(url, params=params, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+    else:
+        # fallback to urllib (stdlib) when requests is not available
+        query = _urllib_parse.urlencode(params)
+        full_url = f"{url}?{query}"
+        with _urllib_request.urlopen(full_url, timeout=10) as fh:
+            if hasattr(fh, "getcode"):
+                status = fh.getcode()
+                if status >= 400:
+                    raise RuntimeError(f"HTTP error {status} when fetching {full_url}")
+            body = fh.read()
+            data = _json.loads(body.decode("utf-8"))
 
     if data.get("retCode") != 0:
         raise RuntimeError(f"Bybit kline error {data.get('retCode')}: {data.get('retMsg')}")
