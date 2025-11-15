@@ -1,5 +1,5 @@
 # app/bots/profit_sweeper.py
-# Flashback — Profit Sweeper (Main, hardened + DRY_RUN)
+# Flashback — Profit Sweeper (Main, hardened + DRY_RUN + dedicated TG)
 #
 # What it does
 # - At your daily cutoff (London time), compute today's realized PnL (USDT) on the main account.
@@ -26,6 +26,10 @@
 #   - SWEEPER_DRY_RUN env flag:
 #         SWEEPER_DRY_RUN=true  -> simulate all transfers, log only.
 #         SWEEPER_DRY_RUN=false -> perform real Bybit transfers (original behavior).
+#   - Dedicated Telegram channel: "profit_sweeper" (separate bot/token from main).
+#       .env:
+#           TG_TOKEN_PROFIT_SWEEPER=...
+#           TG_CHAT_PROFIT_SWEEPER=...
 
 import os
 import time
@@ -80,31 +84,20 @@ from app.core.flashback_common import (
 
 from app.core.notifier_bot import get_notifier
 
-tg = get_notifier("main")
+# Use dedicated Telegram channel "profit_sweeper"
+# .env should define:
+#   TG_TOKEN_PROFIT_SWEEPER=...
+#   TG_CHAT_PROFIT_SWEEPER=...
+tg = get_notifier("profit_sweeper")
 
 # --- Paths & DRY_RUN config ---
 
 # ROOT_DIR = project root: .../Flashback
 ROOT_DIR = Path(__file__).resolve().parents[2]
 STATE_DIR = ROOT_DIR / "state"
+STATE_DIR.mkdir(parents=True, exist_ok=True)
 STATE_PATH = STATE_DIR / "profit_sweeper_state.json"
 
-def _load_state() -> dict:
-    """
-    Load sweeper state from disk.
-    Keys:
-      - last_swept_date: "YYYY-MM-DD" or None
-      - sub_rr_index: int (next starting index in SUB_UIDS_ROUND_ROBIN)
-    """
-    try:
-        if STATE_PATH.exists():
-            return orjson_loads(STATE_PATH.read_bytes())
-    except Exception:
-        pass
-    return {
-        "last_swept_date": None,
-        "sub_rr_index": 0,
-    }
 
 def _parse_bool(val, default=False):
     """
@@ -117,10 +110,9 @@ def _parse_bool(val, default=False):
         return val
     return str(val).strip().lower() in ("1", "true", "yes", "on")
 
+
 SWEEPER_DRY_RUN = _parse_bool(os.getenv("SWEEPER_DRY_RUN"), True)
-def _save_state(state: dict) -> None:
-    STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    STATE_PATH.write_bytes(orjson_dumps(state))
+
 
 def _load_state() -> dict:
     """
@@ -249,7 +241,7 @@ def _transfer_unified_to_funding_usdt(amount: Decimal) -> bool:
         return False
 
     if SWEEPER_DRY_RUN:
-        tg.info(f"[Sweeper] DRY_RUN: would transfer { _fmt_usd(amount) } from UNIFIED -> FUNDING.")
+        tg.info(f"[Sweeper] DRY_RUN: would transfer {_fmt_usd(amount)} from UNIFIED -> FUNDING.")
         return True
 
     body = {
@@ -441,7 +433,7 @@ def _sweep_once(today_str: str, state: dict) -> None:
 
 def loop():
     tg.info(
-        "🧾 Flashback Profit Sweeper started.\n"
+        "🧾 Flashback Profit Sweeper started (via supervisor).\n"
         f"SWEEPER_DRY_RUN: {'ON' if SWEEPER_DRY_RUN else 'OFF'}\n"
         f"State file: {STATE_PATH}"
     )
