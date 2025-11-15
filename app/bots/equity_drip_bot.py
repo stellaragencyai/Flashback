@@ -1,5 +1,5 @@
 # app/bots/equity_drip_bot.py
-# Flashback — Equity Drip Bot (Main)
+# Flashback — Equity Drip Bot (Main, dedicated TG)
 #
 # Purpose
 #   After each profitable closed trade, transfer DRIP_PCT of realized PnL (USDT)
@@ -17,23 +17,44 @@
 # Notes
 #   - Polls v5 closed-pnl every few seconds; builds a stable key per row.
 #   - Only linear USDT category is considered.
+#   - Uses dedicated Telegram channel "drip" via app.core.notifier_bot.get_notifier("drip").
+#       .env should have something like:
+#           TG_TOKEN_DRIP=...
+#           TG_CHAT_DRIP=...
 
 import time
+import hashlib
 from decimal import Decimal, ROUND_DOWN
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
-import hashlib
+
 import orjson
 
 from app.core.flashback_common import (
-    bybit_get, send_tg, get_equity_usdt, inter_transfer_usdt_to_sub,
-    SUB_UIDS_ROUND_ROBIN, DRIP_PCT, DRIP_MIN_USD, MAIN_BAL_FLOOR_USD
+    bybit_get,
+    get_equity_usdt,
+    inter_transfer_usdt_to_sub,
+    SUB_UIDS_ROUND_ROBIN,
+    DRIP_PCT,
+    DRIP_MIN_USD,
+    MAIN_BAL_FLOOR_USD,
 )
+from app.core.notifier_bot import get_notifier
 
 CATEGORY = "linear"
 POLL_SECONDS = 6
-STATE_PATH = Path("app/state/drip_state.json")
 PAGE_LIMIT = 100  # last 100 closed pnl rows
+
+# Root-based state path: state/drip_state.json
+ROOT_DIR = Path(__file__).resolve().parents[2]
+STATE_DIR = ROOT_DIR / "state"
+STATE_DIR.mkdir(parents=True, exist_ok=True)
+STATE_PATH = STATE_DIR / "drip_state.json"
+
+# Dedicated Telegram channel for drip
+# Configure "drip" channel in notifier_bot (e.g., TG_TOKEN_DRIP / TG_CHAT_DRIP in .env)
+tg = get_notifier("drip")
+
 
 def _load_state() -> dict:
     try:
@@ -43,9 +64,11 @@ def _load_state() -> dict:
         pass
     return {"processed": {}, "rr_index": 0}
 
+
 def _save_state(state: dict) -> None:
     STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
     STATE_PATH.write_bytes(orjson.dumps(state))
+
 
 def _stable_key(row: dict) -> str:
     """
@@ -67,20 +90,27 @@ def _stable_key(row: dict) -> str:
     s = "|".join(fields).encode()
     return hashlib.sha1(s).hexdigest()
 
+
 def _list_recent_closed_pnl() -> List[dict]:
     try:
         r = bybit_get("/v5/position/closed-pnl", {"category": CATEGORY, "limit": str(PAGE_LIMIT)})
         rows = r.get("result", {}).get("list", []) or []
         return rows
     except Exception as e:
-        send_tg(f"[Drip] closed-pnl fetch error: {e}")
+        try:
+            tg.error(f"[Drip] closed-pnl fetch error: {e}")
+        except Exception:
+            print(f"[Drip] closed-pnl fetch error: {e}")
         return []
+
 
 def _fmt(x: Decimal) -> str:
     return f"${x.quantize(Decimal('0.01'), rounding=ROUND_DOWN)}"
 
+
 def _round_down_cents(x: Decimal) -> Decimal:
     return x.quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+
 
 def _pick_next_uid(state: dict, uids: List[str]) -> str:
     i = state.get("rr_index", 0) % len(uids)
@@ -88,14 +118,27 @@ def _pick_next_uid(state: dict, uids: List[str]) -> str:
     state["rr_index"] = (i + 1) % len(uids)
     return uid
 
+
 def loop():
-    send_tg("💧 Flashback Equity Drip Bot started.")
+    # Clear startup confirmation from dedicated drip bot
+    try:
+        tg.info(
+            "💧 Flashback Equity Drip Bot started (via supervisor).\n"
+            f"State file: {STATE_PATH}\n"
+            f"Poll: {POLL_SECONDS}s | CATEGORY={CATEGORY}"
+        )
+    except Exception:
+        print("💧 Flashback Equity Drip Bot started (via supervisor).")
+
     state = _load_state()
     processed = state.get("processed", {})
     subs = [u.strip() for u in SUB_UIDS_ROUND_ROBIN.split(",") if u.strip()]
 
     if not subs:
-        send_tg("💧 Drip disabled: no SUB_UIDS_ROUND_ROBIN configured.")
+        try:
+            tg.warn("💧 Drip disabled: no SUB_UIDS_ROUND_ROBIN configured.")
+        except Exception:
+            print("💧 Drip disabled: no SUB_UIDS_ROUND_ROBIN configured.")
         return
 
     while True:
@@ -117,24 +160,34 @@ def loop():
                         continue
 
                     # Amount to drip
-                    amt = _round_down_cents(pnl * DRIP_PCT / Decimal(1)) if DRIP_PCT > 1 else _round_down_cents(pnl * DRIP_PCT)
-                    # In our config DRIP_PCT is already a fraction (e.g., 0.15). If it's 15, the code above still works.
+                    # If DRIP_PCT is already a fraction (0.15), this is pnl * 0.15.
+                    # If DRIP_PCT is 15, we still get reasonable behavior via / Decimal(1) branch.
+                    if DRIP_PCT > 1:
+                        amt = _round_down_cents(pnl * DRIP_PCT / Decimal(1))
+                    else:
+                        amt = _round_down_cents(pnl * DRIP_PCT)
 
                     if amt < Decimal(DRIP_MIN_USD):
                         processed[key] = True
                         continue
 
                     eq = get_equity_usdt()
-                    # Only outgoing here; equity check ensures floor not violated
                     if (eq - amt) < Decimal(MAIN_BAL_FLOOR_USD):
-                        send_tg(f"💧 Skipped drip {_fmt(amt)} (floor {MAIN_BAL_FLOOR_USD} would be violated).")
+                        try:
+                            tg.info(
+                                f"💧 Skipped drip {_fmt(amt)} (floor {MAIN_BAL_FLOOR_USD} would be violated)."
+                            )
+                        except Exception:
+                            print(
+                                f"💧 Skipped drip {_fmt(amt)} (floor {MAIN_BAL_FLOOR_USD} would be violated)."
+                            )
                         processed[key] = True
                         continue
 
                     # Select target sub by round-robin
                     uid = _pick_next_uid(state, subs)
 
-                    # Execute transfer
+                    # Execute transfer (live)
                     inter_transfer_usdt_to_sub(uid, amt)
                     processed[key] = True
                     _save_state({"processed": processed, "rr_index": state["rr_index"]})
@@ -142,8 +195,14 @@ def loop():
                     # Notify
                     sym = row.get("symbol", "")
                     exit_px = row.get("avgExitPrice", None)
-                    send_tg(f"✅ Dripped {_fmt(amt)} from {sym} profit to sub UID {uid}"
-                            + (f" | exit {exit_px}" if exit_px else ""))
+                    msg = (
+                        f"✅ Dripped {_fmt(amt)} from {sym} profit to sub UID {uid}"
+                        + (f" | exit {exit_px}" if exit_px else "")
+                    )
+                    try:
+                        tg.info(msg)
+                    except Exception:
+                        print(msg)
 
                 except Exception as ie:
                     # Mark as processed on hard parse failures to avoid clogging
@@ -151,7 +210,10 @@ def loop():
                         processed[_stable_key(row)] = True
                     except Exception:
                         pass
-                    send_tg(f"[Drip] row error: {ie}")
+                    try:
+                        tg.error(f"[Drip] row error: {ie}")
+                    except Exception:
+                        print(f"[Drip] row error: {ie}")
 
             # Persist state periodically even if nothing changed
             _save_state({"processed": processed, "rr_index": state.get("rr_index", 0)})
@@ -159,8 +221,12 @@ def loop():
             time.sleep(POLL_SECONDS)
 
         except Exception as e:
-            send_tg(f"[Drip] {e}")
+            try:
+                tg.error(f"[Drip] {e}")
+            except Exception:
+                print(f"[Drip] {e}")
             time.sleep(8)
+
 
 if __name__ == "__main__":
     loop()
