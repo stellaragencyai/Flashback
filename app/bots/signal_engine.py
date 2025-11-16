@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Flashback / Base44 — Signal Engine v2 (Strategy-aware + AI-logging)
+Flashback / Base44 — Signal Engine v2 (Strategy-aware + AI-logging + JSONL export)
 
 What this does:
 - If SIG_USE_STRATEGIES=true (default) and app.core.strategies is available:
@@ -22,6 +22,7 @@ Shared behavior:
 - Emits at most ONE signal per closed bar per (symbol, timeframe).
 - Sends human-readable alerts via the main Telegram notifier.
 - Logs every signal into the AI event store via app.core.ai_hooks.log_signal_from_engine.
+- ALSO appends machine-readable signals to signals/observed.jsonl for auto_executor.
 
 .env keys used (all optional with defaults):
     BYBIT_BASE                = https://api.bybit.com
@@ -45,6 +46,7 @@ from __future__ import annotations
 
 import os
 import time
+import json as _jsonlib
 from pathlib import Path
 from typing import Dict, List, Tuple, Any, Optional
 
@@ -55,7 +57,7 @@ except Exception:
     # Fallback to stdlib if `requests` is not installed in the environment
     import urllib.request as _urllib_request
     import urllib.parse as _urllib_parse
-    import json as _json
+    import json as _json_fallback
     _HAS_REQUESTS = False
 
 from dotenv import load_dotenv
@@ -119,6 +121,11 @@ SIG_HEARTBEAT_SEC = int(os.getenv("SIG_HEARTBEAT_SEC", "300"))
 # How many closes to use for our toy MA logic
 MA_LOOKBACK = 8
 
+# Where to write executor-friendly signals
+SIGNALS_DIR = ROOT_DIR / "signals"
+SIGNALS_DIR.mkdir(parents=True, exist_ok=True)
+SIGNALS_PATH = SIGNALS_DIR / "observed.jsonl"
+
 
 # ---------- Telegram Notifier ----------
 
@@ -174,7 +181,7 @@ def fetch_recent_klines(
                 if status >= 400:
                     raise RuntimeError(f"HTTP error {status} when fetching {full_url}")
             body = fh.read()
-            data = _json.loads(body.decode("utf-8"))
+            data = _json_fallback.loads(body.decode("utf-8"))
 
     if data.get("retCode") != 0:
         raise RuntimeError(f"Bybit kline error {data.get('retCode')}: {data.get('retMsg')}")
@@ -266,6 +273,64 @@ def tf_display(tf: str) -> str:
     return f"{tf}m"
 
 
+# ---------- JSONL export for auto_executor ----------
+
+def append_signal_jsonl(
+    symbol: str,
+    side_text: str,
+    tf_label: str,
+    bar_ts: int,
+    reason: str,
+    debug: Dict[str, Any],
+    sub_uid: Optional[str] = None,
+    strategy_name: Optional[str] = None,
+) -> None:
+    """
+    Append a single JSONL line in the format expected by auto_executor.
+
+    Field mapping:
+        - symbol: "BTCUSDT"
+        - side: "Buy" / "Sell"       (mapped from LONG/SHORT)
+        - timeframe: "5m", "15m", ...
+        - reason: e.g. "close_up_above_ma"
+        - ts_ms: bar timestamp
+        - est_rr: rough constant for now (0.25)
+        - sub_uid: logical owner of this signal (strategy's subaccount)
+    """
+    if side_text not in ("LONG", "SHORT"):
+        return
+
+    side_exec = "Buy" if side_text == "LONG" else "Sell"
+
+    payload: Dict[str, Any] = {
+        "symbol": symbol,
+        "side": side_exec,
+        "timeframe": tf_label,
+        "reason": reason,
+        "ts_ms": bar_ts,
+        "est_rr": 0.25,
+        "debug": {
+            "engine": "signal_engine_v2",
+            "raw_reason": reason,
+            "last_close": debug.get("last_close"),
+            "prev_close": debug.get("prev_close"),
+            "ma": debug.get("ma"),
+        },
+    }
+
+    if sub_uid is not None:
+        payload["sub_uid"] = str(sub_uid)
+    if strategy_name is not None:
+        payload["strategy_name"] = strategy_name
+
+    try:
+        with SIGNALS_PATH.open("a", encoding="utf-8") as f:
+            f.write(_jsonlib.dumps(payload, separators=(",", ":"), ensure_ascii=False))
+            f.write("\n")
+    except Exception as e:
+        print(f"[signal_engine] Failed to append to {SIGNALS_PATH}: {e}")
+
+
 # ---------- Strategy-aware universe ----------
 
 def build_universe() -> Dict[Tuple[str, str], List[Dict[str, Any]]]:
@@ -297,14 +362,11 @@ def build_universe() -> Dict[Tuple[str, str], List[Dict[str, Any]]]:
             if not symbols or not tfs:
                 continue
 
-            # You *could* filter on automation_mode here (“LIVE”/“PAPER” only),
-            # but for now we still want signals for OFF strategies for learning.
             for sym in symbols:
                 sym_u = str(sym).upper()
                 for tf in tfs:
                     tf_str = str(tf).strip()
                     key = (sym_u, tf_str)
-                    # Store a normalized view of the strategy we need here
                     entry = {
                         "sub_uid": sub_uid,
                         "name": name,
@@ -331,7 +393,7 @@ def main() -> None:
     all_symbols = sorted({k[0] for k in universe.keys()})
     all_tfs = sorted({k[1] for k in universe.keys()})
 
-    print("=== Flashback Signal Engine v2 (Strategy-aware, AI-logging) ===")
+    print("=== Flashback Signal Engine v2 (Strategy-aware, AI-logging + JSONL) ===")
     print(f"Project root: {ROOT_DIR}")
     print(f"Using .env:   {ENV_PATH} (exists={ENV_PATH.exists()})")
     print(f"Bybit base:   {BYBIT_BASE}")
@@ -342,6 +404,7 @@ def main() -> None:
     print(f"Universe timeframes: {all_tfs}")
     print(f"Poll every:          {SIG_POLL_SEC} sec")
     print(f"Heartbeat:           {SIG_HEARTBEAT_SEC} sec")
+    print(f"JSONL path:          {SIGNALS_PATH}")
 
     if not SIG_ENABLED:
         msg = "⚠️ Signal engine is disabled (SIG_ENABLED=false). Exiting."
@@ -385,15 +448,11 @@ def main() -> None:
         loop_start = time.time()
         total_signals_this_loop = 0
 
-        # cache candles per (symbol, tf) per loop (if we ever need reuse)
-        candles_cache: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
-
         for (symbol, tf), strat_list in universe.items():
             key = (symbol, tf)
 
             try:
                 candles = fetch_recent_klines(symbol, tf, limit=max(MA_LOOKBACK + 2, 10))
-                candles_cache[key] = candles
             except Exception as e:
                 print(f"[WARN] Failed to fetch klines for {symbol} {tf}: {type(e).__name__}: {e}")
                 tg_error(f"⚠️ Signal engine kline error for {symbol} {tf}: {type(e).__name__}")
@@ -436,7 +495,7 @@ def main() -> None:
                     f"Strategies: `{strat_names}`\n"
                     f"Last close: `{last_c}` | MA({len([c['close'] for c in candles[-MA_LOOKBACK:]])}): `{ma}`\n"
                     f"Reason: `{reason}`\n"
-                    f"(No orders placed yet, logging only.)"
+                    f"(No orders placed here; executors handle trades.)"
                 )
             else:
                 msg = (
@@ -444,7 +503,7 @@ def main() -> None:
                     f"Side: *{side}*\n"
                     f"Last close: `{last_c}` | MA({len([c['close'] for c in candles[-MA_LOOKBACK:]])}): `{ma}`\n"
                     f"Reason: `{reason}`\n"
-                    f"(No orders placed yet, logging only, generic universe.)"
+                    f"(No orders placed here; executors handle trades, generic universe.)"
                 )
 
             tg_info(msg)
@@ -462,7 +521,6 @@ def main() -> None:
                     sub_uid = str(s.get("sub_uid"))
                     strat_name = s.get("name", f"sub-{sub_uid}")
                     automation_mode = s.get("automation_mode")
-                    # Optional human-readable label
                     try:
                         sub_label = stratreg.get_sub_label(sub_uid) if _HAS_STRATEGY_REGISTRY else None
                     except Exception:
@@ -496,6 +554,18 @@ def main() -> None:
                         f"[SIGNAL] {symbol} {tf_label} {side} | "
                         f"strategy={strat_name} sub_uid={sub_uid} | signal_id={signal_id} | reason={reason}"
                     )
+
+                    # JSONL export per strategy for auto_executor
+                    append_signal_jsonl(
+                        symbol=symbol,
+                        side_text=side,
+                        tf_label=tf_label,
+                        bar_ts=bar_ts,
+                        reason=reason,
+                        debug=debug,
+                        sub_uid=sub_uid,
+                        strategy_name=strat_name,
+                    )
             else:
                 # Fallback: generic signal, no specific strategy
                 extra = dict(base_extra)
@@ -516,6 +586,18 @@ def main() -> None:
                 print(
                     f"[SIGNAL] {symbol} {tf_label} {side} | "
                     f"strategy=GENERIC | signal_id={signal_id} | reason={reason}"
+                )
+
+                # JSONL export generic
+                append_signal_jsonl(
+                    symbol=symbol,
+                    side_text=side,
+                    tf_label=tf_label,
+                    bar_ts=bar_ts,
+                    reason=reason,
+                    debug=debug,
+                    sub_uid=None,
+                    strategy_name=None,
                 )
 
         # Heartbeat
