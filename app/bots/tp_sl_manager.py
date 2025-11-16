@@ -1,5 +1,5 @@
 # app/bots/tp_sl_manager.py
-# Flashback — TP/SL Manager v3
+# Flashback — TP/SL Manager v4
 #
 # Key upgrades:
 # - Uses Bybit V5 PRIVATE WEBSOCKET for near-instant position updates (optional).
@@ -9,19 +9,28 @@
 # - Keeps SL attached via trading-stop.
 # - ATR caching to avoid hammering indicators.
 #
-# Modes:
-#   HTTP poll (default, simpler, still safer):
-#       TPM_USE_WEBSOCKET=false (or unset)  -> poll list_open_positions() every POLL_SECONDS
+# New behavior (v4):
+#   1) "No TP" watchdog:
+#      - On every cycle, for every open position, we inspect open orders.
+#      - If ALL TP orders have been canceled, we IMMEDIATELY rebuild the TP ladder
+#        (5 exits or a single mid TP for tiny positions), regardless of whether
+#        avgPrice/size changed.
 #
-#   WebSocket mode (recommended for speed):
-#       TPM_USE_WEBSOCKET=true
-#       BYBIT_MAIN_TRADE_KEY / BYBIT_MAIN_TRADE_SECRET must be valid
-#       Requires: pip install websocket-client
+#   2) Manual TP override respect:
+#      - If we detect TP prices deviating significantly from our computed grid,
+#        we treat that symbol as "manual TP override":
+#           • We STOP amending TP prices for that symbol.
+#           • We can still rebalance quantities to cover size (optional).
+#           • We send a one-time Telegram notice the first time this is seen.
+#      - Manual mode resets when:
+#           • Position is closed, or
+#           • All TPs are canceled and we rebuild from scratch.
 #
-# ENV knobs:
-#   TPM_USE_WEBSOCKET=true|false
-#   TPM_POLL_SECONDS=2        (HTTP mode only)
-#   TPM_ATR_CACHE_SEC=60
+#   ENV knobs:
+#     TPM_USE_WEBSOCKET=true|false
+#     TPM_POLL_SECONDS=2        (HTTP mode only; also used as cadence for TP checks)
+#     TPM_ATR_CACHE_SEC=60
+#     TPM_RESPECT_MANUAL_TPS=true|false   (default true)
 #
 #   ATR_MULT, TP5_MAX_ATR_MULT, TP5_MAX_PCT, R_MIN_TICKS come from flashback_common or defaults.
 
@@ -66,7 +75,7 @@ except Exception:
 CATEGORY = "linear"
 QUOTE = "USDT"
 
-# Polling cadence (HTTP mode only)
+# Polling cadence (HTTP mode only + safety watchdog)
 POLL_SECONDS = int(os.getenv("TPM_POLL_SECONDS", "2"))
 
 # WebSocket toggle & URL
@@ -77,13 +86,21 @@ WS_PRIVATE_URL = os.getenv("BYBIT_WS_PRIVATE_URL", "wss://stream.bybit.com/v5/pr
 WS_KEY = os.getenv("BYBIT_MAIN_TRADE_KEY", "")
 WS_SECRET = os.getenv("BYBIT_MAIN_TRADE_SECRET", "")
 
+# Respect manual TP modifications (prices) or not
+_RESPECT_MANUAL_TPS = os.getenv("TPM_RESPECT_MANUAL_TPS", "true").strip().lower() == "true"
+
 # ATR cache: symbol -> (ts, atr)
 _ATR_CACHE_TTL = int(os.getenv("TPM_ATR_CACHE_SEC", "60"))
 _ATR_CACHE: Dict[str, Tuple[float, Decimal]] = {}
 
+# Manual TP override per symbol: if True, we do NOT amend TP prices for that symbol.
+_MANUAL_TP_MODE: Dict[str, bool] = {}
+
+
 def _open_orders(symbol: str) -> List[dict]:
     r = bybit_get("/v5/order/realtime", {"category": CATEGORY, "symbol": symbol})
     return r.get("result", {}).get("list", []) or []
+
 
 def _tp_orders(orders: List[dict], side_now: str) -> List[dict]:
     # TP = reduce-only limits on opposite side
@@ -95,6 +112,7 @@ def _tp_orders(orders: List[dict], side_now: str) -> List[dict]:
         and str(o.get("reduceOnly", "False")).lower() == "true"
         and o.get("orderStatus") in ("New", "PartiallyFilled")
     ]
+
 
 def _get_atr(symbol: str, entry: Decimal) -> Decimal:
     """
@@ -114,6 +132,7 @@ def _get_atr(symbol: str, entry: Decimal) -> Decimal:
 
     _ATR_CACHE[symbol] = (now, atr_val)
     return atr_val
+
 
 def _compute_exit_grid(symbol: str, side_now: str, entry: Decimal) -> Tuple[Decimal, List[Decimal]]:
     """
@@ -164,6 +183,7 @@ def _compute_exit_grid(symbol: str, side_now: str, entry: Decimal) -> Tuple[Deci
     tps = [psnap(px, tick) for px in tps]
     return sl, tps
 
+
 def _amend_tp_order(symbol: str, order: dict,
                     new_qty: Optional[Decimal],
                     new_price: Optional[Decimal]) -> None:
@@ -195,18 +215,54 @@ def _amend_tp_order(symbol: str, order: dict,
     except Exception as e:
         send_tg(f"[TP/SL amend] {symbol} error: {e}")
 
+
+def _detect_manual_override(symbol: str,
+                            tpo: List[dict],
+                            target_tps: List[Decimal]) -> bool:
+    """
+    Heuristic: if a majority of TP prices deviate from our ideal grid by more than
+    ~2 ticks, assume the user manually moved them and enter manual TP mode.
+
+    This is deliberately forgiving. If you nudge one TP a bit we won't freak out,
+    but if you reshape the ladder, we stop fighting you.
+    """
+    if not tpo or not target_tps:
+        return False
+
+    tick, _step, _ = get_ticks(symbol)
+    cur_prices = sorted(Decimal(o["price"]) for o in tpo)
+    tgt_sorted = sorted(target_tps)
+
+    n = min(len(cur_prices), len(tgt_sorted), 5)
+    if n == 0:
+        return False
+
+    mismatches = 0
+    for i in range(n):
+        if abs(cur_prices[i] - tgt_sorted[i]) > (tick * 2):
+            mismatches += 1
+
+    # Two or more TPs significantly off-grid => treating as manual override.
+    return mismatches >= 2
+
+
 def _sync_tp_ladder(symbol: str, side_now: str, size: Decimal, tps: List[Decimal]) -> None:
     """
     Ensure we have a 5-TP ladder, **without** ever nuking the book.
-    - If no TPs: place fresh 5 reduce-only orders.
-    - If some TPs: amend in place to match target prices / equal qty splits.
-    - Extra TPs (from manual tinkering) are left alone; we only manage 5 core levels.
+
+    Behavior:
+      - If no TPs: place fresh 5 reduce-only orders (or single mid TP if tiny).
+      - If some TPs:
+          • If TPM_RESPECT_MANUAL_TPS=true and we detect a manual override,
+            we DO NOT amend TP prices; we only (optionally) rebalance qty.
+          • Otherwise: we amend TPs in place to match target prices / equal qty splits.
+      - Extra TPs (from manual tinkering) are left alone; we only manage up to 5 core levels.
     """
     tick, step, _ = get_ticks(symbol)
 
     # Very small positions: avoid zero-qty orders
-    each = qdown(size / Decimal(5), step)
-    if each <= 0:
+    each_default = qdown(size / Decimal(5), step)
+    if each_default <= 0:
         # Position too tiny for 5-way split; place a single TP at tp3 to avoid nonsense.
         mid_tp = tps[2]  # center of the ladder
         place_reduce_tp(symbol, side_now, qdown(size, step), mid_tp)
@@ -215,11 +271,53 @@ def _sync_tp_ladder(symbol: str, side_now: str, size: Decimal, tps: List[Decimal
     orders_all = _open_orders(symbol)
     tpo = _tp_orders(orders_all, side_now)
 
-    # If no existing TP orders: just place the ladder and move on.
+    # If no existing TP orders: just place the ladder and reset manual mode.
     if not tpo:
+        # If user nuked all TPs, we assume they want the bot back in charge.
+        _MANUAL_TP_MODE.pop(symbol, None)
         for px in tps:
-            place_reduce_tp(symbol, side_now, each, px)
+            place_reduce_tp(symbol, side_now, each_default, px)
         return
+
+    manual_mode = _MANUAL_TP_MODE.get(symbol, False)
+
+    # Possibly enter manual TP mode if we detect significant deviation from our grid.
+    if _RESPECT_MANUAL_TPS and not manual_mode:
+        if _detect_manual_override(symbol, tpo, tps):
+            manual_mode = True
+            _MANUAL_TP_MODE[symbol] = True
+            try:
+                send_tg(
+                    f"✋ Manual TP override detected for {symbol}. "
+                    f"Bot will respect your TP prices until you cancel them or flatten."
+                )
+            except Exception:
+                pass
+
+    # In manual mode: do NOT touch prices; optionally rebalance quantities only.
+    if manual_mode and _RESPECT_MANUAL_TPS:
+        n = len(tpo)
+        if n <= 0:
+            # Shouldn't happen; but if it does, treat as no TPs and rebuild next tick.
+            _MANUAL_TP_MODE.pop(symbol, None)
+            return
+
+        each_manual = qdown(size / Decimal(n), step)
+        if each_manual <= 0:
+            return
+
+        for o in tpo:
+            current_qty = Decimal(o["qty"])
+            if current_qty != each_manual:
+                _amend_tp_order(
+                    symbol,
+                    o,
+                    new_qty=each_manual,
+                    new_price=None,  # DO NOT touch price in manual mode
+                )
+        return
+
+    # --- Full auto mode (no manual override) below ---
 
     # Sort both existing orders and target tps by price for consistent pairing
     tps_sorted = sorted(tps)
@@ -237,27 +335,33 @@ def _sync_tp_ladder(symbol: str, side_now: str, size: Decimal, tps: List[Decimal
             current_qty = Decimal(o["qty"])
 
             need_price = abs(current_px - target_px) > tick
-            need_qty = current_qty != each
+            need_qty = current_qty != each_default
 
             if need_price or need_qty:
                 _amend_tp_order(
                     symbol,
                     o,
-                    new_qty=each if need_qty else None,
+                    new_qty=each_default if need_qty else None,
                     new_price=target_px if need_price else None,
                 )
         else:
             # Missing level: place a new TP
-            place_reduce_tp(symbol, side_now, each, target_px)
+            place_reduce_tp(symbol, side_now, each_default, target_px)
 
     # 2) We intentionally do NOT cancel “extra” orders here to avoid ever
     #    having the book empty. Manual extra TPs are your problem.
+
 
 def _ensure_exits_for_position(p: dict,
                                seen_state: Dict[str, Tuple[Decimal, Decimal]]) -> None:
     """
     For a single position record, ensure SL + 5TP exist and are balanced with size.
-    Uses amend-only logic for TPs to avoid wiping the ladder.
+
+    Important changes:
+      - We NO LONGER skip work just because (avgPrice, size) didn't change.
+        We always check that TPs exist; if they're gone, we rebuild immediately.
+      - We only send the "Exits set" Telegram message when the position state changes,
+        to avoid spamming on every poll.
     """
     symbol = p["symbol"]
     side_now = p["side"]  # "Buy"/"Sell"
@@ -267,27 +371,28 @@ def _ensure_exits_for_position(p: dict,
     if size <= 0:
         # Flat; nothing to do
         seen_state.pop(symbol, None)
+        _MANUAL_TP_MODE.pop(symbol, None)
         return
 
+    prev_state = seen_state.get(symbol)
     state = (entry, size)
-    if seen_state.get(symbol) == state:
-        # No change in avgPrice or size; nothing to update
-        return
 
     # 1) Compute grid
     sl, tps = _compute_exit_grid(symbol, side_now, entry)
 
-    # 2) Attach/update SL
+    # 2) Attach/update SL (trading stop; Bybit handles idempotency)
     set_stop_loss(symbol, sl)
 
-    # 3) Ensure TP ladder via amend-only logic
+    # 3) Ensure TP ladder via amend-only logic (with manual override respect)
     _sync_tp_ladder(symbol, side_now, size, tps)
 
-    # 4) Notify once per state change
-    send_tg(f"🎯 Exits set {symbol} {side_now} | size {size} | SL {sl} | TPs {', '.join(map(str, tps))}")
+    # 4) Notify only on state change (entry/size)
+    if prev_state != state:
+        send_tg(f"🎯 Exits set {symbol} {side_now} | size {size} | SL {sl} | TPs {', '.join(map(str, tps))}")
 
-    # 5) Track new state
+    # 5) Track current state
     seen_state[symbol] = state
+
 
 # ---------------------------------------------------------------------------
 # HTTP polling mode (fallback / simple)
@@ -295,9 +400,12 @@ def _ensure_exits_for_position(p: dict,
 
 def _loop_http_poll() -> None:
     """
-    Legacy but safer/faster now:
+    Legacy but now much safer/faster:
     - Polls positions every POLL_SECONDS
-    - Uses amend-only TP logic
+    - On every pass, for each open position, ensures:
+        • SL is attached
+        • TP ladder exists (recreated immediately if user nuked it)
+    - Uses amend-only TP logic and respects manual TP prices if enabled.
     """
     send_tg(f"🎛 Flashback TP/SL Manager started (HTTP mode, {POLL_SECONDS}s).")
     seen: Dict[str, Tuple[Decimal, Decimal]] = {}
@@ -316,11 +424,13 @@ def _loop_http_poll() -> None:
             for s in list(seen.keys()):
                 if s not in current_symbols:
                     seen.pop(s, None)
+                    _MANUAL_TP_MODE.pop(s, None)
 
             time.sleep(POLL_SECONDS)
         except Exception as e:
             send_tg(f"[TP/SL HTTP] {e}")
             time.sleep(5)
+
 
 # ---------------------------------------------------------------------------
 # WebSocket mode: private stream for positions
@@ -347,6 +457,7 @@ def _ws_auth_payload() -> dict:
         "op": "auth",
         "args": [WS_KEY, str(expires), sig],
     }
+
 
 def _handle_ws_position_message(msg: dict,
                                 seen: Dict[str, Tuple[Decimal, Decimal]]) -> None:
@@ -390,6 +501,7 @@ def _handle_ws_position_message(msg: dict,
         if size <= 0:
             # Flat now; clear state
             seen.pop(symbol, None)
+            _MANUAL_TP_MODE.pop(symbol, None)
             continue
 
         # Normalize to match REST shape
@@ -405,6 +517,8 @@ def _handle_ws_position_message(msg: dict,
     for s in list(seen.keys()):
         if s not in current_symbols:
             seen.pop(s, None)
+            _MANUAL_TP_MODE.pop(s, None)
+
 
 def _loop_ws() -> None:
     """
@@ -412,7 +526,11 @@ def _loop_ws() -> None:
     - Connects to wss://stream.bybit.com/v5/private
     - Authenticates
     - Subscribes to "position" private topic
-    - On each push, enforces SL + TP ladder with amend-only logic
+    - On each push, enforces SL + TP ladder with amend-only logic.
+
+    Note: TP recreation after cancel still works in WS mode, but if the
+    exchange stops sending position events while flat, HTTP mode will
+    remain the more predictable fallback.
     """
     if websocket is None:
         raise RuntimeError("websocket-client is not installed. pip install websocket-client")
@@ -424,7 +542,8 @@ def _loop_ws() -> None:
     while True:
         ws = None
         try:
-            ws = websocket.create_connection(WS_PRIVATE_URL, timeout=20)
+            # Short-ish timeout so we don't block forever on recv
+            ws = websocket.create_connection(WS_PRIVATE_URL, timeout=5)
             # Auth
             auth_msg = _ws_auth_payload()
             ws.send(json.dumps(auth_msg))
@@ -473,6 +592,7 @@ def _loop_ws() -> None:
                 except Exception:
                     pass
 
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -481,6 +601,11 @@ def loop():
     """
     Entry point called by supervisor.
     Chooses WebSocket mode or HTTP poll mode depending on TPM_USE_WEBSOCKET.
+
+    For your "absolutely unacceptable" TP-gap problem:
+      - HTTP mode now ALWAYS checks for missing TPs every POLL_SECONDS.
+      - If all TPs are canceled on an open position, they are rebuilt on the
+        very next poll, regardless of size/avgPrice changes.
     """
     if USE_WS:
         try:
@@ -491,6 +616,7 @@ def loop():
             _loop_http_poll()
     else:
         _loop_http_poll()
+
 
 if __name__ == "__main__":
     loop()
