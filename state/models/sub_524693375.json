@@ -1,0 +1,1 @@
+{"sub_uid":"524693375","role":"pattern_breakout","ai_profile":"pattern_v1","min_trades":150,"min_rr_mean":0.15,"bad_hours":[0,1,2,3],"version":1,"note":"stub model; thresholds will be replaced by trained stats later"}
