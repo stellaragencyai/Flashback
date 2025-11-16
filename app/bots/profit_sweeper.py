@@ -1,19 +1,27 @@
 # app/bots/profit_sweeper.py
-# Flashback — Profit Sweeper (Main, hardened + DRY_RUN + dedicated TG + console + force-run)
+# Flashback — Profit Sweeper (Main, hardened + DRY_RUN + dedicated TG + console + multi-sweep)
 #
 # What it does
-# - At your daily cutoff (London time), compute today's realized PnL (USDT) on the main account.
-# - If PnL > 0:
-#       Allocate per SWEEP_ALLOCATION (e.g., "80:MAIN,20:SUBS").
-#       • MAIN     -> no transfer; remains in main (UNIFIED Trading Account)
-#       • SUBS     -> round-robin UNIFIED -> sub UNIFIED (by MemberId UID list)
-#   If PnL <= 0, it just reports and does nothing else.
+# - Up to 3 times per London day, ~8 hours apart:
+#       • Computes *incremental* realized PnL (USDT) on the main account
+#         since the last sweep, bounded to the current London day.
+#       • If incremental PnL > 0:
+#             Allocate per SWEEP_ALLOCATION (e.g., "80:MAIN,20:SUBS").
+#             · MAIN     -> no transfer; remains in main (UNIFIED)
+#             · FUNDING  -> UNIFIED -> FUNDING internal transfer
+#             · SUBS     -> round-robin UNIFIED -> sub UNIFIED (by MemberId UID list)
+#         If incremental PnL <= 0, it just reports and does nothing else.
+#
 # - Safety checks:
 #       • Won't transfer below MAIN_BAL_FLOOR_USD
 #       • Skips tiny amounts and respects DRIP_MIN_USD for SUBS part
-# - Idempotent:
-#       • Stores the last swept London-date to avoid double runs.
-#       • Stores a persistent subaccount round-robin index.
+#
+# - Idempotent / stateful:
+#       • Stores:
+#             - last_swept_date (London "YYYY-MM-DD")
+#             - last_sweep_ms (epoch ms of last sweep)
+#             - sweeps_today (0–3 per London date)
+#             - sub_rr_index (round-robin index for sub UIDs)
 #
 # Extra hardening:
 #   - ROOT-relative state path: state/profit_sweeper_state.json (no more CWD dependency).
@@ -22,12 +30,12 @@
 #         SWEEPER_DRY_RUN=false -> perform real Bybit transfers (original behavior).
 #   - Dedicated Telegram channel: "profit_sweeper" (separate bot/token from main).
 #   - Console + Telegram logging (so you see everything in the terminal).
-#   - SWEEP_FORCE_RUN=true -> run once immediately for today's London date, then exit.
+#   - SWEEP_FORCE_RUN=true -> run once immediately using the incremental PnL
+#       since the last sweep boundary (or day start), then exit.
 #
 # Env of interest:
-#   SWEEP_CUTOFF_TZ      (e.g., Europe/London)
-#   SWEEP_CUTOFF_HHMM    (e.g., 23:59)
-#   SWEEP_ALLOCATION     (default/fallback: "80:MAIN,20:SUBS")
+#   SWEEP_CUTOFF_TZ      (e.g., Europe/London)  [used for "day" boundaries]
+#   SWEEP_ALLOCATION     (e.g., "80:MAIN,20:SUBS")
 #   MAIN_BAL_FLOOR_USD
 #   DRIP_MIN_USD
 #   SWEEPER_DRY_RUN      ("true"/"false")
@@ -46,7 +54,8 @@ import pytz
 # --- Constants ---
 PAGE_LIMIT = 200
 CATEGORY = "linear"  # You may want to adjust this if needed
-POLL_SECONDS = 30  # Polling interval in seconds when not in cutoff window
+POLL_SECONDS = 30  # Polling interval in seconds when not sweeping
+SWEEP_INTERVAL_SECONDS = 8 * 60 * 60  # 8 hours between sweeps
 
 # orjson compatibility wrapper: prefer orjson if installed, otherwise fall back to stdlib json.
 try:
@@ -78,7 +87,6 @@ from app.core.flashback_common import (
     inter_transfer_usdt_to_sub,
     SUB_UIDS_ROUND_ROBIN,
     SWEEP_CUTOFF_TZ,
-    SWEEP_CUTOFF_HHMM,
     SWEEP_ALLOCATION,
     MAIN_BAL_FLOOR_USD,
     DRIP_MIN_USD,
@@ -116,9 +124,6 @@ def _parse_bool(val, default=False):
 SWEEPER_DRY_RUN = _parse_bool(os.getenv("SWEEPER_DRY_RUN"), True)
 SWEEP_FORCE_RUN = _parse_bool(os.getenv("SWEEP_FORCE_RUN"), False)
 
-# Default allocation if SWEEP_ALLOCATION is empty/undefined
-DEFAULT_SWEEP_ALLOCATION = "80:MAIN,20:SUBS"
-
 
 # --- Console + Telegram logging wrappers ---
 
@@ -151,17 +156,24 @@ def _load_state() -> dict:
     """
     Load sweeper state from disk.
     Keys:
-      - last_swept_date: "YYYY-MM-DD" or None
+      - last_swept_date: "YYYY-MM-DD" or None (London date)
+      - last_sweep_ms: epoch ms of last sweep (or None)
+      - sweeps_today: int (0..3)
       - sub_rr_index: int (next starting index in SUB_UIDS_ROUND_ROBIN)
     """
     try:
         if STATE_PATH.exists():
-            return orjson_loads(STATE_PATH.read_bytes())
+            data = orjson_loads(STATE_PATH.read_bytes())
+        else:
+            data = {}
     except Exception:
-        pass
+        data = {}
+
     return {
-        "last_swept_date": None,
-        "sub_rr_index": 0,
+        "last_swept_date": data.get("last_swept_date"),
+        "last_sweep_ms": data.get("last_sweep_ms"),
+        "sweeps_today": int(data.get("sweeps_today", 0) or 0),
+        "sub_rr_index": int(data.get("sub_rr_index", 0) or 0),
     }
 
 
@@ -193,21 +205,6 @@ def _london_day_bounds(d: datetime) -> Tuple[int, int]:
     return int(start.timestamp() * 1000), int(end.timestamp() * 1000)
 
 
-def _is_cutoff_window(now: datetime) -> bool:
-    """
-    True when local London time is >= cutoff HH:MM and < cutoff + 2 minutes.
-    This gives us a small window to fire once per day.
-    """
-    try:
-        hh, mm = [int(x) for x in SWEEP_CUTOFF_HHMM.split(":")]
-    except Exception:
-        log_warn(f"[Sweeper] Invalid SWEEP_CUTOFF_HHMM={SWEEP_CUTOFF_HHMM!r}, using 23:59 fallback.")
-        hh, mm = 23, 59
-
-    cutoff = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
-    return (now >= cutoff) and (now < cutoff + timedelta(minutes=2))
-
-
 def _fmt_usd(x: Decimal) -> str:
     return f"${x.quantize(Decimal('0.01'), rounding=ROUND_DOWN)}"
 
@@ -215,14 +212,11 @@ def _fmt_usd(x: Decimal) -> str:
 # --- PnL aggregation ---
 
 
-def _sum_realized_pnl_today() -> Decimal:
+def _sum_realized_pnl_interval(start_ms: int, end_ms: int) -> Decimal:
     """
-    Sum closed PnL in USDT for today's London session across linear category.
+    Sum closed PnL in USDT for [start_ms, end_ms] across linear category.
     Uses cursor pagination to handle >200 rows.
     """
-    now_ldn = _london_now()
-    start_ms, end_ms = _london_day_bounds(now_ldn)
-
     total = Decimal("0")
     cursor: Optional[str] = None
     pages = 0
@@ -252,7 +246,7 @@ def _sum_realized_pnl_today() -> Decimal:
             cursor = result.get("nextPageCursor")
             pages += 1
             if not cursor or pages > 20:
-                # safety cap: no more than 20*200 = 4000 rows/day
+                # safety cap: no more than 20*200 = 4000 rows/interval
                 break
 
     except Exception as e:
@@ -342,24 +336,51 @@ def _parse_allocation(spec: str) -> List[Tuple[Decimal, str]]:
 # --- Core sweep ---
 
 
-def _sweep_once(today_str: str, state: dict) -> None:
+def _sweep_once(now: datetime, state: dict, label: str = "") -> None:
     """
-    Execute a single daily sweep if profitable.
+    Execute a single sweep if incremental PnL is positive.
+    Uses PnL from max(day_start, last_sweep_ms) .. now_ms.
     Updates state["sub_rr_index"] for round-robin SUBS distribution.
     """
-    realized = _sum_realized_pnl_today()
+    today_str = now.strftime("%Y-%m-%d")
+    now_ms = int(now.timestamp() * 1000)
+    day_start_ms, day_end_ms = _london_day_bounds(now)
+
+    # Ensure interval is within today's London session
+    last_sweep_ms_raw = state.get("last_sweep_ms")
+    try:
+        last_sweep_ms = int(last_sweep_ms_raw) if last_sweep_ms_raw is not None else None
+    except Exception:
+        last_sweep_ms = None
+
+    if last_sweep_ms is None or last_sweep_ms < day_start_ms:
+        start_ms = day_start_ms
+    else:
+        start_ms = last_sweep_ms
+
+    # Clip end to not exceed day_end_ms (paranoia)
+    end_ms = min(now_ms, day_end_ms)
+
+    if end_ms <= start_ms:
+        log_info(
+            f"📉 No valid interval for sweep (London {today_str}) "
+            f"[start_ms={start_ms}, end_ms={end_ms}] — skipping."
+        )
+        return
+
+    realized = _sum_realized_pnl_interval(start_ms, end_ms)
 
     # Report even if <= 0
     if realized <= 0:
-        log_info(f"📉 Daily PnL (London {today_str}): {_fmt_usd(realized)} — no sweep.")
+        log_info(
+            f"📉 Incremental PnL (London {today_str} {label or ''} "
+            f"{start_ms}->{end_ms}): {_fmt_usd(realized)} — no sweep."
+        )
         return
 
     # Equity check and floor
     equity = get_equity_usdt()
-
-    # Use SWEEP_ALLOCATION if provided, otherwise default 80:MAIN,20:SUBS
-    alloc_spec = SWEEP_ALLOCATION or DEFAULT_SWEEP_ALLOCATION
-    allocs = _parse_allocation(alloc_spec)
+    allocs = _parse_allocation(SWEEP_ALLOCATION)
 
     # Normalize floor & drip to Decimals
     floor = Decimal(str(MAIN_BAL_FLOOR_USD))
@@ -432,8 +453,8 @@ def _sweep_once(today_str: str, state: dict) -> None:
                 try:
                     if SWEEPER_DRY_RUN:
                         log_info(
-                            f"[Sweeper] DRY_RUN: would transfer {_fmt_usd(part)} "
-                            f"from UNIFIED -> sub UID {uid}."
+                            f"[Sweeper] DRY_RUN: would transfer "
+                            f"{_fmt_usd(part)} from UNIFIED -> sub UID {uid}."
                         )
                     else:
                         inter_transfer_usdt_to_sub(uid, part)
@@ -454,14 +475,15 @@ def _sweep_once(today_str: str, state: dict) -> None:
         else:
             details.append(f"{dest}: {_fmt_usd(amt)} (unknown dest; skipped)")
 
-    # Persist updated RR index
+    # Persist updated RR index & last_sweep_ms
     if sub_count > 0:
         state["sub_rr_index"] = sub_rr_index
+    state["last_sweep_ms"] = end_ms
 
     msg = (
-        f"✅ Profit Sweep (London {today_str})\n"
-        f"Realized: {_fmt_usd(realized)}\n"
-        f"Equity:  {_fmt_usd(equity_dec)}\n"
+        f"✅ Profit Sweep (London {today_str}{' ' + label if label else ''})\n"
+        f"Incremental PnL: {_fmt_usd(realized)}\n"
+        f"Equity:          {_fmt_usd(equity_dec)}\n"
         + "\n".join(f"• {d}" for d in details)
         + f"\n\nSWEEPER_DRY_RUN: {'ON' if SWEEPER_DRY_RUN else 'OFF'}"
     )
@@ -473,7 +495,8 @@ def loop():
         "🧾 Flashback Profit Sweeper started (via supervisor).\n"
         f"SWEEPER_DRY_RUN: {'ON' if SWEEPER_DRY_RUN else 'OFF'}\n"
         f"SWEEP_FORCE_RUN: {'ON' if SWEEP_FORCE_RUN else 'OFF'}\n"
-        f"State file: {STATE_PATH}"
+        f"State file: {STATE_PATH}\n"
+        f"Schedule: up to 3 sweeps per London day, >= {SWEEP_INTERVAL_SECONDS / 3600:.0f}h apart."
     )
     state = _load_state()
 
@@ -481,26 +504,59 @@ def loop():
     if SWEEP_FORCE_RUN:
         now = _london_now()
         today_str = now.strftime("%Y-%m-%d")
-        _sweep_once(today_str, state)
+        _sweep_once(now, state, label="FORCE")
+        # Update daily stats as if this counted as a sweep
         state["last_swept_date"] = today_str
+        state["sweeps_today"] = int(state.get("sweeps_today", 0) or 0) + 1
         _save_state(state)
         log_info("[Sweeper] Force run completed; exiting because SWEEP_FORCE_RUN=true.")
         return
 
-    # Normal daemon mode: wait for cutoff window each day
+    # Normal daemon mode
     while True:
         try:
             now = _london_now()
             today_str = now.strftime("%Y-%m-%d")
+            now_ms = int(now.timestamp() * 1000)
 
-            if _is_cutoff_window(now):
-                if state.get("last_swept_date") != today_str:
-                    _sweep_once(today_str, state)
-                    state["last_swept_date"] = today_str
+            last_date = state.get("last_swept_date")
+            sweeps_today = int(state.get("sweeps_today", 0) or 0)
+
+            # New London day -> reset sweep counter
+            if last_date != today_str:
+                state["last_swept_date"] = today_str
+                sweeps_today = 0
+                state["sweeps_today"] = sweeps_today
+                # Do not reset last_sweep_ms; _sweep_once handles day boundaries
+
+            if sweeps_today < 3:
+                last_sweep_ms_raw = state.get("last_sweep_ms")
+                try:
+                    last_sweep_ms = int(last_sweep_ms_raw) if last_sweep_ms_raw is not None else None
+                except Exception:
+                    last_sweep_ms = None
+
+                should_sweep = False
+                if last_sweep_ms is None:
+                    # Never swept before -> allow immediately
+                    should_sweep = True
+                else:
+                    delta = (now_ms - last_sweep_ms) / 1000.0
+                    if delta >= SWEEP_INTERVAL_SECONDS:
+                        should_sweep = True
+
+                if should_sweep:
+                    label = f"run #{sweeps_today + 1}"
+                    _sweep_once(now, state, label=label)
+                    sweeps_today += 1
+                    state["sweeps_today"] = sweeps_today
                     _save_state(state)
-                # Sleep past the window to avoid duplicate in the same minute
-                time.sleep(90)
+                    # Avoid hammering immediately again
+                    time.sleep(60)
+                else:
+                    time.sleep(POLL_SECONDS)
             else:
+                # Already hit 3 sweeps today, just chill until next day
                 time.sleep(POLL_SECONDS)
 
         except Exception as e:
