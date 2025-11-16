@@ -1,4 +1,3 @@
-# app/bots/signal_test_emitter.py
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -127,7 +126,7 @@ def main() -> None:
     )
 
     for i in range(TEST_COUNT):
-        sig = emit_once()
+        emit_once()
         if TEST_COUNT > 1:
             time.sleep(0.2)  # small spacing
     print("Done emitting test signal(s).", flush=True)
