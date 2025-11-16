@@ -1,1 +1,1 @@
-{"sub_uid":"524636309","role":"swing_trend","ai_profile":"swing_v1","min_trades":100,"min_rr_mean":0.1,"bad_hours":[],"version":1,"note":"stub model; thresholds will be replaced by trained stats later"}
+{"sub_uid":"524636309","role":"swing_reversion","ai_profile":"reversion_v1","min_trades":50,"min_rr_mean":0.0,"bad_hours":[],"version":1,"note":"stub model; thresholds will be replaced by trained stats later"}
