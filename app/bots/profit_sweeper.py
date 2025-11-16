@@ -4,9 +4,8 @@
 # What it does
 # - At your daily cutoff (London time), compute today's realized PnL (USDT) on the main account.
 # - If PnL > 0:
-#       Allocate per SWEEP_ALLOCATION (e.g., "60:MAIN,25:FUNDING,15:SUBS").
-#       • MAIN     -> no transfer; remains in main
-#       • FUNDING  -> UNIFIED -> FUNDING internal transfer
+#       Allocate per SWEEP_ALLOCATION (e.g., "80:MAIN,20:SUBS").
+#       • MAIN     -> no transfer; remains in main (UNIFIED Trading Account)
 #       • SUBS     -> round-robin UNIFIED -> sub UNIFIED (by MemberId UID list)
 #   If PnL <= 0, it just reports and does nothing else.
 # - Safety checks:
@@ -28,7 +27,7 @@
 # Env of interest:
 #   SWEEP_CUTOFF_TZ      (e.g., Europe/London)
 #   SWEEP_CUTOFF_HHMM    (e.g., 23:59)
-#   SWEEP_ALLOCATION     (e.g., "75:MAIN,10:FUNDING,15:SUBS")
+#   SWEEP_ALLOCATION     (default/fallback: "80:MAIN,20:SUBS")
 #   MAIN_BAL_FLOOR_USD
 #   DRIP_MIN_USD
 #   SWEEPER_DRY_RUN      ("true"/"false")
@@ -116,6 +115,9 @@ def _parse_bool(val, default=False):
 
 SWEEPER_DRY_RUN = _parse_bool(os.getenv("SWEEPER_DRY_RUN"), True)
 SWEEP_FORCE_RUN = _parse_bool(os.getenv("SWEEP_FORCE_RUN"), False)
+
+# Default allocation if SWEEP_ALLOCATION is empty/undefined
+DEFAULT_SWEEP_ALLOCATION = "80:MAIN,20:SUBS"
 
 
 # --- Console + Telegram logging wrappers ---
@@ -294,11 +296,11 @@ def _transfer_unified_to_funding_usdt(amount: Decimal) -> bool:
 
 def _parse_allocation(spec: str) -> List[Tuple[Decimal, str]]:
     """
-    "60:MAIN,25:FUNDING,15:SUBS" -> [(60, 'MAIN'), (25, 'FUNDING'), (15, 'SUBS')]
+    "80:MAIN,20:SUBS" -> [(80, 'MAIN'), (20, 'SUBS')]
 
     Robust:
       - Ignores malformed chunks (no colon, bad decimal).
-      - If nothing valid, falls back to 75:MAIN,10:FUNDING,15:SUBS.
+      - If nothing valid, falls back to 80:MAIN,20:SUBS.
     """
     parts: List[Tuple[Decimal, str]] = []
     for raw in spec.split(","):
@@ -324,12 +326,11 @@ def _parse_allocation(spec: str) -> List[Tuple[Decimal, str]]:
     if not parts:
         log_error(
             f"[Sweeper] SWEEP_ALLOCATION={spec!r} produced no valid parts; "
-            "using fallback 75:MAIN,10:FUNDING,15:SUBS."
+            "using fallback 80:MAIN,20:SUBS."
         )
         parts = [
-            (Decimal("75"), "MAIN"),
-            (Decimal("10"), "FUNDING"),
-            (Decimal("15"), "SUBS"),
+            (Decimal("80"), "MAIN"),
+            (Decimal("20"), "SUBS"),
         ]
 
     tot = sum(p for p, _ in parts)
@@ -355,7 +356,10 @@ def _sweep_once(today_str: str, state: dict) -> None:
 
     # Equity check and floor
     equity = get_equity_usdt()
-    allocs = _parse_allocation(SWEEP_ALLOCATION)
+
+    # Use SWEEP_ALLOCATION if provided, otherwise default 80:MAIN,20:SUBS
+    alloc_spec = SWEEP_ALLOCATION or DEFAULT_SWEEP_ALLOCATION
+    allocs = _parse_allocation(alloc_spec)
 
     # Normalize floor & drip to Decimals
     floor = Decimal(str(MAIN_BAL_FLOOR_USD))
@@ -428,7 +432,8 @@ def _sweep_once(today_str: str, state: dict) -> None:
                 try:
                     if SWEEPER_DRY_RUN:
                         log_info(
-                            f"[Sweeper] DRY_RUN: would transfer {_fmt_usd(part)} from UNIFIED -> sub UID {uid}."
+                            f"[Sweeper] DRY_RUN: would transfer {_fmt_usd(part)} "
+                            f"from UNIFIED -> sub UID {uid}."
                         )
                     else:
                         inter_transfer_usdt_to_sub(uid, part)
