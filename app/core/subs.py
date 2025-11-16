@@ -1,176 +1,198 @@
-# app/core/subs.py
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-Flashback — Subaccount registry & round-robin
+Flashback — Subaccount Registry & Round-Robin
 
-Modernized version:
-- NO dependency on app/config/subaccounts.json anymore.
-- Subaccounts are derived directly from .env:
+Purpose:
+    Central place to understand which subaccounts exist, what they are called,
+    and how to rotate through them for DRIP / profit distribution / canary tests.
 
-    SUB_UID_1=260417078
-    SUB_UID_2=...
-    ...
-    SUB_UID_10=...
-
-- Each UID is mapped to a logical label & notifier channel:
-
-    SUB_UID_1 -> {"uid": "...", "label": "flashback01", "channel": "flashback01"}
-    SUB_UID_2 -> {"uid": "...", "label": "flashback02", "channel": "flashback02"}
-    ...
-
-This plays nice with:
-  - app/core/notifier_bot.py   (channels "flashback01".."flashback10")
-  - per_position_drip.py       (expects rr_next() → {"uid", "label"})
-  - future bots that want sub routing.
+Reads from .env:
+    SUB_UID_1..SUB_UID_10     -> individual sub UIDs (Bybit MemberId)
+    SUB_UIDS_ROUND_ROBIN      -> comma list of UIDs for rotation
+    SUB_LABELS                -> "uid:Label,uid:Label,..." mapping
 
 State:
-- app/state/subs_state.json keeps the current rr_idx (round-robin index).
+    state/subs_rr.json:
+        {
+          "index": <int>   # pointer into current round-robin list
+        }
+
+API:
+    all_subs()      -> List[{"uid": str, "label": str, "enabled": bool}]
+    rr_next()       -> {"uid": str, "label": str} | None
+    peek_current()  -> {"uid": str, "label": str} | None
+    reset_rr()      -> None   (reset index to 0)
 """
 
 from __future__ import annotations
 
-import os
 import json
+import os
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 
-from app.core.notifier_bot import get_notifier
+# ROOT = project root: .../Flashback
+ROOT = Path(__file__).resolve().parents[2]
+STATE_DIR = ROOT / "state"
+STATE_DIR.mkdir(parents=True, exist_ok=True)
 
-STATE_PATH = Path("app/state/subs_state.json")
+RR_STATE_PATH = STATE_DIR / "subs_rr.json"
+
+# ---- Env parsing ----
+
+# Collect SUB_UID_1..SUB_UID_10 (if present)
+_env = os.environ
+_sub_uids_raw: List[str] = []
+for i in range(1, 11):
+    val = _env.get(f"SUB_UID_{i}")
+    if val:
+        val = val.strip()
+        if val:
+            _sub_uids_raw.append(val)
+
+# Fallback/explicit rotation list
+_rr_env = _env.get("SUB_UIDS_ROUND_ROBIN", "")
+_rr_uids: List[str] = [
+    x.strip() for x in _rr_env.split(",") if x.strip()
+]
+
+# If no explicit RR list, use SUB_UID_1..N
+if not _rr_uids and _sub_uids_raw:
+    _rr_uids = list(_sub_uids_raw)
+
+# Label mapping from SUB_LABELS env
+# Example:
+#   SUB_LABELS=524630315:Sub1_Trend,524633243:Sub2_Breakout,...
+_labels_raw = _env.get("SUB_LABELS", "")
+
+_label_map: Dict[str, str] = {}
+if _labels_raw:
+    for chunk in _labels_raw.split(","):
+        chunk = chunk.strip()
+        if not chunk or ":" not in chunk:
+            continue
+        uid_str, label = chunk.split(":", 1)
+        uid_str = uid_str.strip()
+        label = label.strip()
+        if not uid_str or not label:
+            continue
+        _label_map[uid_str] = label
 
 
-# ---------- Internal state helpers ----------
+def _label_for_uid(uid: str) -> str:
+    """
+    Get a human-readable label for a sub UID.
+    Uses SUB_LABELS if provided; falls back to "sub-<uid>".
+    """
+    uid_s = str(uid)
+    return _label_map.get(uid_s, f"sub-{uid_s}")
 
-def _load_state() -> dict:
+
+# ---- State helpers ----
+
+def _load_rr_state() -> Dict[str, Any]:
     try:
-        if STATE_PATH.exists():
-            return json.loads(STATE_PATH.read_text(encoding="utf-8"))
+        if RR_STATE_PATH.exists():
+            return json.loads(RR_STATE_PATH.read_text(encoding="utf-8"))
     except Exception:
         pass
-    return {"rr_idx": 0}
+    return {"index": 0}
 
 
-def _save_state(st: dict) -> None:
-    STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    STATE_PATH.write_text(json.dumps(st, ensure_ascii=False, indent=2), encoding="utf-8")
+def _save_rr_state(st: Dict[str, Any]) -> None:
+    RR_STATE_PATH.write_text(
+        json.dumps(st, separators=(",", ":"), ensure_ascii=False),
+        encoding="utf-8",
+    )
 
 
-# ---------- Subaccount discovery (from .env) ----------
+# ---- Public API ----
 
-def load_subs() -> List[Dict]:
+def all_subs() -> List[Dict[str, Any]]:
     """
-    Build the current subaccount list from environment variables.
-
-    For i = 1..10:
-      Reads SUB_UID_i.
-      If non-empty, creates:
-
-        {
-          "uid": "<value of SUB_UID_i>",
-          "label": "flashback0i",
-          "channel": "flashback0i",
-        }
-
-    Example .env fragment:
-
-        SUB_UID_1=260417078
-        SUB_UID_2=152304954
-        ...
-        SUB_UID_6=152499802
-
-    If no SUB_UID_i are set, returns [].
+    Return a list of all known subs based on SUB_UID_1..N,
+    with labels attached. All marked enabled=True by default
+    (manual-only logic is handled at a higher level by strategies).
     """
-    subs: List[Dict] = []
-    for i in range(1, 11):
-        uid = os.getenv(f"SUB_UID_{i}", "").strip()
-        if not uid:
-            continue
-        label = f"flashback{i:02d}"
+    uids = _sub_uids_raw or _rr_uids
+    subs: List[Dict[str, Any]] = []
+    for uid in uids:
         subs.append(
             {
                 "uid": uid,
-                "label": label,
-                "channel": label,  # for notifier_bot.get_notifier(...)
+                "label": _label_for_uid(uid),
+                "enabled": True,  # strategy-level config decides true/false behaviour
             }
         )
     return subs
 
 
-# ---------- Round-robin helpers ----------
-
-def rr_index() -> int:
+def _rr_list() -> List[Dict[str, str]]:
     """
-    Return the current round-robin index (0-based).
+    Internal: build the rotation list as [{"uid": .., "label": ..}, ...].
+    Uses SUB_UIDS_ROUND_ROBIN if set, else SUB_UID_1..N.
     """
-    st = _load_state()
-    try:
-        return int(st.get("rr_idx", 0))
-    except Exception:
-        return 0
-
-
-def rr_advance(n: int) -> int:
-    """
-    Advance the round-robin index by n steps (mod len(subs)).
-    Persists the new index to STATE_PATH.
-    """
-    subs = load_subs()
-    if not subs:
-        # No subs configured; always index 0 (but effectively unused)
-        return 0
-    idx = (rr_index() + n) % len(subs)
-    _save_state({"rr_idx": idx})
-    return idx
+    uids = _rr_uids or _sub_uids_raw
+    out: List[Dict[str, str]] = []
+    for uid in uids:
+        out.append(
+            {
+                "uid": uid,
+                "label": _label_for_uid(uid),
+            }
+        )
+    return out
 
 
-def rr_next() -> Optional[Dict]:
+def rr_next() -> Optional[Dict[str, str]]:
     """
-    Return the next sub in the round-robin sequence, or None if no subs.
+    Get the next sub in the round-robin rotation and advance the pointer.
 
-    Typical usage:
-        sub = rr_next()
-        if sub:
-            inter_transfer_usdt_to_sub(sub["uid"], amount)
+    Returns:
+        {"uid": <str>, "label": <str>} or None if no subs configured.
     """
-    subs = load_subs()
-    if not subs:
+    rr = _rr_list()
+    if not rr:
         return None
-    idx = rr_advance(1)  # move forward one each call
-    return subs[idx]
+
+    st = _load_rr_state()
+    idx = int(st.get("index", 0))
+    if idx < 0 or idx >= len(rr):
+        idx = 0
+
+    sub = rr[idx]
+
+    # advance index
+    idx = (idx + 1) % len(rr)
+    st["index"] = idx
+    _save_rr_state(st)
+
+    return sub
 
 
-def peek_current() -> Optional[Dict]:
+def peek_current() -> Optional[Dict[str, str]]:
     """
-    Return the current sub for rr_idx without advancing the index.
+    Peek at the current RR sub without advancing.
+
+    Returns:
+        {"uid": <str>, "label": <str>} or None if no subs configured.
     """
-    subs = load_subs()
-    if not subs:
+    rr = _rr_list()
+    if not rr:
         return None
-    idx = rr_index() % len(subs)
-    return subs[idx]
+
+    st = _load_rr_state()
+    idx = int(st.get("index", 0))
+    if idx < 0 or idx >= len(rr):
+        idx = 0
+
+    return rr[idx]
 
 
-# ---------- Telegram helper (via notifier_bot) ----------
-
-def send_tg_to_sub(sub: Dict, text: str) -> None:
+def reset_rr() -> None:
     """
-    Send a message to the Telegram channel associated with a sub.
-
-    `sub` is expected to be a dict from load_subs()/rr_next()/peek_current(), e.g.:
-
-        {
-          "uid": "260417078",
-          "label": "flashback01",
-          "channel": "flashback01",
-        }
-
-    This uses app.core.notifier_bot.get_notifier(channel).
+    Reset the round-robin index to 0.
+    Useful in tests or when re-seeding rotation.
     """
-    if not sub:
-        return
-
-    channel = sub.get("channel") or sub.get("label")
-    if not channel:
-        return
-
-    tg = get_notifier(channel)
-    tg.info(text)
+    _save_rr_state({"index": 0})
