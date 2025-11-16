@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Flashback — Auto Executor v2 (Strategy-aware, multi-sub, AI-gated + canary sizing + guard-aware)
+Flashback — Auto Executor v2 (Strategy-aware, multi-sub, AI-gated + canary sizing + guard-aware + feature logging)
 
 Purpose
 -------
@@ -13,6 +13,7 @@ Purpose
     • Run the candidate through the AI gate (ai_gate_decide).
     • If allowed, size and place entry orders on Bybit (MAIN unified account),
       subject to Portfolio Guard (daily loss limits & per-trade risk caps).
+    • Log a feature snapshot to the Feature Store for AI memory.
 - Let TP/SL Manager handle exits via ladders / stop logic.
 
 Key ideas
@@ -61,6 +62,8 @@ Dependencies
         get_notifier("main")
     - app.core.portfolio_guard:
         can_open_trade
+    - app.core.feature_store:
+        log_trade_open
 
 State
 -----
@@ -101,7 +104,7 @@ from app.ai.executor_ai_gate import ai_gate_decide
 from app.core.notifier_bot import get_notifier
 
 # Portfolio-level risk guard (daily limits + per-trade caps)
-from app.core import portfolio_guard
+from app.core import portfolio_guard, feature_store
 
 # ---------- Config & paths ---------- #
 
@@ -502,6 +505,27 @@ def _handle_signal_for_strategy(sig: Dict[str, Any], strat: Dict[str, Any]) -> N
         return
 
     reason_str = str(sig.get("reason", "signal")).strip() or "signal"
+
+    # --- Feature Store snapshot -------------
+    try:
+        feature_store.log_trade_open(
+            sub_uid=sub_uid,
+            strategy=lbl,
+            strategy_id=str(ai_profile),
+            symbol=symbol,
+            side=side,
+            mode=effective_mode,
+            equity_usd=equity,
+            risk_usd=risk_usd,
+            risk_pct=rpct,
+            ai_score=float(score),
+            ai_reason=str(reason_ai),
+            features=features,
+            signal=sig,
+        )
+    except Exception as e:
+        # Logging failure shouldn't block trading
+        log_warn(f"[EXEC][FEATURE_STORE_FAIL] {lbl} {symbol} | {e}")
 
     log_info(
         f"[EXEC] {lbl} mode={effective_mode} symbol={symbol} side={side} "
