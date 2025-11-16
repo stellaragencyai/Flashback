@@ -1,5 +1,5 @@
 # app/bots/profit_sweeper.py
-# Flashback — Profit Sweeper (Main, hardened + DRY_RUN + dedicated TG)
+# Flashback — Profit Sweeper (Main, hardened + DRY_RUN + dedicated TG + console + force-run)
 #
 # What it does
 # - At your daily cutoff (London time), compute today's realized PnL (USDT) on the main account.
@@ -17,19 +17,22 @@
 #       • Stores a persistent subaccount round-robin index.
 #
 # Extra hardening:
-#   - Robust SWEEP_ALLOCATION parsing (skips bad chunks, fallback default).
-#   - Defensive cutoff/timezone handling.
-#   - Full traceback logging on unexpected exceptions.
-#
-# Enhancements in this version:
 #   - ROOT-relative state path: state/profit_sweeper_state.json (no more CWD dependency).
 #   - SWEEPER_DRY_RUN env flag:
 #         SWEEPER_DRY_RUN=true  -> simulate all transfers, log only.
 #         SWEEPER_DRY_RUN=false -> perform real Bybit transfers (original behavior).
 #   - Dedicated Telegram channel: "profit_sweeper" (separate bot/token from main).
-#       .env:
-#           TG_TOKEN_PROFIT_SWEEPER=...
-#           TG_CHAT_PROFIT_SWEEPER=...
+#   - Console + Telegram logging (so you see everything in the terminal).
+#   - SWEEP_FORCE_RUN=true -> run once immediately for today's London date, then exit.
+#
+# Env of interest:
+#   SWEEP_CUTOFF_TZ      (e.g., Europe/London)
+#   SWEEP_CUTOFF_HHMM    (e.g., 23:59)
+#   SWEEP_ALLOCATION     (e.g., "75:MAIN,10:FUNDING,15:SUBS")
+#   MAIN_BAL_FLOOR_USD
+#   DRIP_MIN_USD
+#   SWEEPER_DRY_RUN      ("true"/"false")
+#   SWEEP_FORCE_RUN      ("true"/"false")
 
 import os
 import time
@@ -112,6 +115,34 @@ def _parse_bool(val, default=False):
 
 
 SWEEPER_DRY_RUN = _parse_bool(os.getenv("SWEEPER_DRY_RUN"), True)
+SWEEP_FORCE_RUN = _parse_bool(os.getenv("SWEEP_FORCE_RUN"), False)
+
+
+# --- Console + Telegram logging wrappers ---
+
+
+def log_info(msg: str) -> None:
+    print(msg, flush=True)
+    try:
+        tg.info(msg)
+    except Exception:
+        pass
+
+
+def log_warn(msg: str) -> None:
+    print(msg, flush=True)
+    try:
+        tg.warn(msg)
+    except Exception:
+        pass
+
+
+def log_error(msg: str) -> None:
+    print(msg, flush=True)
+    try:
+        tg.error(msg)
+    except Exception:
+        pass
 
 
 def _load_state() -> dict:
@@ -141,8 +172,7 @@ def _get_tz():
     try:
         return pytz.timezone(SWEEP_CUTOFF_TZ)
     except Exception:
-        # Fallback so a bad TZ doesn't kill the bot
-        tg.warn(f"[Sweeper] Invalid SWEEP_CUTOFF_TZ={SWEEP_CUTOFF_TZ!r}, falling back to UTC.")
+        log_warn(f"[Sweeper] Invalid SWEEP_CUTOFF_TZ={SWEEP_CUTOFF_TZ!r}, falling back to UTC.")
         return pytz.UTC
 
 
@@ -169,7 +199,7 @@ def _is_cutoff_window(now: datetime) -> bool:
     try:
         hh, mm = [int(x) for x in SWEEP_CUTOFF_HHMM.split(":")]
     except Exception:
-        tg.warn(f"[Sweeper] Invalid SWEEP_CUTOFF_HHMM={SWEEP_CUTOFF_HHMM!r}, using 23:59 fallback.")
+        log_warn(f"[Sweeper] Invalid SWEEP_CUTOFF_HHMM={SWEEP_CUTOFF_HHMM!r}, using 23:59 fallback.")
         hh, mm = 23, 59
 
     cutoff = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
@@ -224,7 +254,7 @@ def _sum_realized_pnl_today() -> Decimal:
                 break
 
     except Exception as e:
-        tg.error(f"[Sweeper] closed-pnl fetch error: {e}")
+        log_error(f"[Sweeper] closed-pnl fetch error: {e}")
 
     return total
 
@@ -241,7 +271,7 @@ def _transfer_unified_to_funding_usdt(amount: Decimal) -> bool:
         return False
 
     if SWEEPER_DRY_RUN:
-        tg.info(f"[Sweeper] DRY_RUN: would transfer {_fmt_usd(amount)} from UNIFIED -> FUNDING.")
+        log_info(f"[Sweeper] DRY_RUN: would transfer {_fmt_usd(amount)} from UNIFIED -> FUNDING.")
         return True
 
     body = {
@@ -255,7 +285,7 @@ def _transfer_unified_to_funding_usdt(amount: Decimal) -> bool:
         bybit_post("/v5/asset/transfer/universal-transfer", body)
         return True
     except Exception as e:
-        tg.error(f"[Sweeper] Funding transfer failed: {e}")
+        log_error(f"[Sweeper] Funding transfer failed: {e}")
         return False
 
 
@@ -276,23 +306,23 @@ def _parse_allocation(spec: str) -> List[Tuple[Decimal, str]]:
         if not item:
             continue
         if ":" not in item:
-            tg.warn(f"[Sweeper] Bad allocation item (no colon): {item!r}, skipping.")
+            log_warn(f"[Sweeper] Bad allocation item (no colon): {item!r}, skipping.")
             continue
         pct_str, dest = item.split(":", 1)
         try:
             pct = Decimal(pct_str)
         except Exception:
-            tg.warn(f"[Sweeper] Bad allocation percent {pct_str!r} in {item!r}, skipping.")
+            log_warn(f"[Sweeper] Bad allocation percent {pct_str!r} in {item!r}, skipping.")
             continue
         dest = dest.strip().upper()
         if not dest:
-            tg.warn(f"[Sweeper] Empty destination in {item!r}, skipping.")
+            log_warn(f"[Sweeper] Empty destination in {item!r}, skipping.")
             continue
         parts.append((pct, dest))
 
     # Fallback if everything was garbage
     if not parts:
-        tg.error(
+        log_error(
             f"[Sweeper] SWEEP_ALLOCATION={spec!r} produced no valid parts; "
             "using fallback 75:MAIN,10:FUNDING,15:SUBS."
         )
@@ -304,7 +334,7 @@ def _parse_allocation(spec: str) -> List[Tuple[Decimal, str]]:
 
     tot = sum(p for p, _ in parts)
     if tot != Decimal("100"):
-        tg.warn(f"[Sweeper] Allocation totals {tot}%, not 100%. Proceeding anyway.")
+        log_warn(f"[Sweeper] Allocation totals {tot}%, not 100%. Proceeding anyway.")
     return parts
 
 
@@ -320,7 +350,7 @@ def _sweep_once(today_str: str, state: dict) -> None:
 
     # Report even if <= 0
     if realized <= 0:
-        tg.info(f"📉 Daily PnL (London {today_str}): {_fmt_usd(realized)} — no sweep.")
+        log_info(f"📉 Daily PnL (London {today_str}): {_fmt_usd(realized)} — no sweep.")
         return
 
     # Equity check and floor
@@ -339,9 +369,11 @@ def _sweep_once(today_str: str, state: dict) -> None:
     # Total intended outgoing (FUNDING + SUBS)
     outgoing_total = sum(amt for dest, amt in legs if dest in ("FUNDING", "SUBS"))
 
+    equity_dec = Decimal(str(equity))
+
     # If outgoing would push equity below floor, trim SUBS+FUNDING legs
-    if (equity - outgoing_total) < floor:
-        need_cut = floor - (equity - outgoing_total)
+    if (equity_dec - outgoing_total) < floor:
+        need_cut = floor - (equity_dec - outgoing_total)
         if need_cut > 0:
             adjusted: List[Tuple[str, Decimal]] = []
             for dest, amt in legs:
@@ -395,7 +427,7 @@ def _sweep_once(today_str: str, state: dict) -> None:
                 uid = subs[(sub_rr_index + slot) % sub_count]
                 try:
                     if SWEEPER_DRY_RUN:
-                        tg.info(
+                        log_info(
                             f"[Sweeper] DRY_RUN: would transfer {_fmt_usd(part)} from UNIFIED -> sub UID {uid}."
                         )
                     else:
@@ -405,7 +437,7 @@ def _sweep_once(today_str: str, state: dict) -> None:
                     remaining -= part
                     used_slots += 1
                 except Exception as e:
-                    tg.warn(f"[Sweeper] Sub transfer to {uid} failed: {e}")
+                    log_warn(f"[Sweeper] Sub transfer to {uid} failed: {e}")
 
             # Advance the round-robin index by how many subs we actually used
             if sub_count > 0 and used_slots > 0:
@@ -424,21 +456,33 @@ def _sweep_once(today_str: str, state: dict) -> None:
     msg = (
         f"✅ Profit Sweep (London {today_str})\n"
         f"Realized: {_fmt_usd(realized)}\n"
-        f"Equity:  {_fmt_usd(equity)}\n"
+        f"Equity:  {_fmt_usd(equity_dec)}\n"
         + "\n".join(f"• {d}" for d in details)
         + f"\n\nSWEEPER_DRY_RUN: {'ON' if SWEEPER_DRY_RUN else 'OFF'}"
     )
-    tg.info(msg)
+    log_info(msg)
 
 
 def loop():
-    tg.info(
+    log_info(
         "🧾 Flashback Profit Sweeper started (via supervisor).\n"
         f"SWEEPER_DRY_RUN: {'ON' if SWEEPER_DRY_RUN else 'OFF'}\n"
+        f"SWEEP_FORCE_RUN: {'ON' if SWEEP_FORCE_RUN else 'OFF'}\n"
         f"State file: {STATE_PATH}"
     )
     state = _load_state()
 
+    # One-shot mode for testing: run a sweep immediately, then exit
+    if SWEEP_FORCE_RUN:
+        now = _london_now()
+        today_str = now.strftime("%Y-%m-%d")
+        _sweep_once(today_str, state)
+        state["last_swept_date"] = today_str
+        _save_state(state)
+        log_info("[Sweeper] Force run completed; exiting because SWEEP_FORCE_RUN=true.")
+        return
+
+    # Normal daemon mode: wait for cutoff window each day
     while True:
         try:
             now = _london_now()
@@ -456,7 +500,7 @@ def loop():
 
         except Exception as e:
             tb = traceback.format_exc()
-            tg.error(f"[Sweeper] Unhandled error: {e}\n{tb}")
+            log_error(f"[Sweeper] Unhandled error: {e}\n{tb}")
             time.sleep(10)
 
 
