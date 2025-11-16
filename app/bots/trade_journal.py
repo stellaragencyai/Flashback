@@ -1,5 +1,5 @@
 # app/bots/trade_journal.py
-# Flashback — Trade Journal (Main, v3 — richer metrics + trade rating)
+# Flashback — Trade Journal (Main, v3.1 — richer metrics + trade rating + guard-aware)
 #
 # What it does
 # - Streams executions with a persistent cursor so we don't miss partials.
@@ -11,6 +11,7 @@
 #       • equity_at_open, entry_notional_usd
 #       • risk_per_unit, risk_usd, potential_reward_usd
 #       • entry_order_type (Market/Limit/..) and entry_liquidity (MAKER/TAKER)
+#       • order_link_id (for later strategy/sub mapping)
 #       • timestamps: ts_open_ms, ts_open_iso
 #       • num_adds, num_partials
 # - On partial exits: sends PnL-ish updates with remaining size.
@@ -21,6 +22,7 @@
 #       • realized_pnl, realized_rr, result (WIN/LOSS/BREAKEVEN)
 #       • equity_after_close
 #       • rating_score (1–10) + rating_reason
+#       • guard_pnl_applied (bool) — whether Portfolio Guard was updated
 #
 # Files
 # - app/state/journal.jsonl         (append-only ledger of closed trades)
@@ -46,6 +48,9 @@ from app.core.flashback_common import (
 
 from app.core.notifier_bot import get_notifier
 
+# Portfolio-wide guard (daily risk brain)
+from app.core import portfolio_guard
+
 CATEGORY = "linear"
 POLL_SECONDS = 3
 
@@ -55,7 +60,7 @@ OPEN_STATE     = Path("app/state/journal_open.json")
 
 # Journal metadata
 ACCOUNT_LABEL     = "MAIN"
-JOURNAL_VERSION   = 3  # bumped for rating
+JOURNAL_VERSION   = 31  # 3.1: guard-aware + order_link_id
 
 # Use dedicated journal notifier channel
 tg = get_notifier("journal")
@@ -360,9 +365,9 @@ def _side_from_exec(e: dict) -> Optional[str]:
     return None
 
 
-def _entry_order_meta(e: dict) -> Tuple[Optional[str], Optional[str]]:
+def _entry_order_meta(e: dict) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """
-    Extract order type and liquidity from an execution row, if present.
+    Extract order type, liquidity, and order_link_id from an execution row, if present.
     """
     otype = e.get("orderType") or None
     liq = None
@@ -372,7 +377,8 @@ def _entry_order_meta(e: dict) -> Tuple[Optional[str], Optional[str]]:
             liq = "MAKER" if is_maker else "TAKER"
         except Exception:
             liq = None
-    return otype, liq
+    order_link_id = e.get("orderLinkId") or None
+    return otype, liq, order_link_id
 
 # ---------- helpers for final pnl ----------
 
@@ -393,7 +399,7 @@ def _closed_pnl_latest(symbol: str) -> Tuple[Optional[Decimal], Optional[Decimal
 # ---------- main loop ----------
 
 def loop():
-    tg.info("📝📒 Flashback Trade Journal v3 started.")
+    tg.info("📝📒 Flashback Trade Journal v3.1 (guard-aware) started.")
     open_state: Dict[str, dict] = _load_open_state()
     cursor = _load_cursor()
 
@@ -445,6 +451,7 @@ def loop():
                 "equity_at_open": _fmt_dec(eq_open, places=2),
                 "entry_order_type": None,
                 "entry_liquidity": None,
+                "order_link_id": None,
                 "num_adds": 0,
                 "num_partials": 0,
                 "account": ACCOUNT_LABEL,
@@ -517,7 +524,7 @@ def loop():
                             rr = _avg_rr(entry, sl, tps_f)
                             eq_open = get_equity_usdt()
                             risk_per_unit, risk_usd, potential_reward = _risk_from_snapshot(entry, sl, size, rr)
-                            order_type, liquidity = _entry_order_meta(e)
+                            order_type, liquidity, order_link_id = _entry_order_meta(e)
 
                             ts_open = ts or _now_ms()
                             snap = {
@@ -540,6 +547,7 @@ def loop():
                                 "equity_at_open": _fmt_dec(eq_open, places=2),
                                 "entry_order_type": order_type,
                                 "entry_liquidity": liquidity,
+                                "order_link_id": order_link_id,
                                 "num_adds": 0,
                                 "num_partials": 0,
                                 "account": ACCOUNT_LABEL,
@@ -633,6 +641,16 @@ def loop():
                         num_partials=num_partials,
                     )
 
+                    # Apply realized PnL to Portfolio Guard
+                    guard_applied = False
+                    if pnl is not None:
+                        try:
+                            portfolio_guard.record_pnl(pnl)
+                            guard_applied = True
+                        except Exception as _e:
+                            # Log but don't kill the journal
+                            tg.error(f"[Journal] Failed to update Portfolio Guard with pnl {pnl}: {_e}")
+
                     row: Dict[str, Any] = {
                         **open_row,
                         "ts_close": now_ms,
@@ -649,6 +667,7 @@ def loop():
                         "journal_version": open_row.get("journal_version", JOURNAL_VERSION),
                         "rating_score": rating_score,
                         "rating_reason": rating_reason,
+                        "guard_pnl_applied": guard_applied,
                     }
                     _write_jsonl(row)
 
@@ -658,7 +677,7 @@ def loop():
                         "{flag} CLOSE {sym} {direction} | 💵 PnL {pnl} usd "
                         "| 📊 RR {rr} | ⏱ {dur} | 🏦 eq {eq_open}→{eq_after} "
                         "| ➕ adds {adds} | ✂️ partials {partials} "
-                        "| ⭐ rating {rating}/10"
+                        "| ⭐ rating {rating}/10 | 🧱 guard {guard_flag}"
                     ).format(
                         flag=f"🔴🏁{emoji_result}",
                         sym=sym,
@@ -671,6 +690,7 @@ def loop():
                         adds=num_adds,
                         partials=num_partials,
                         rating=rating_score,
+                        guard_flag="✅" if guard_applied else "⚠️",
                     )
                     tg.trade(msg)
 
