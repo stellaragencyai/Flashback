@@ -1,19 +1,25 @@
 # app/bots/tp_sl_manager.py
-# Flashback — TP/SL Manager v4
+# Flashback — TP/SL Manager v5
 #
-# Key upgrades:
-# - Uses Bybit V5 PRIVATE WEBSOCKET for near-instant position updates (optional).
-# - NEVER nukes the whole TP ladder on size change:
-#     • Existing TP orders are amended in place (qty/price).
-#     • Only missing TPs are added; we do NOT call cancel_all() in normal flow.
-# - Keeps SL attached via trading-stop.
-# - ATR caching to avoid hammering indicators.
+# Key upgrades (v5):
+# - 7-TP ladder support (strategy-aware exit profiles).
+# - Strategy-aware exit behavior:
+#     • Attempts to look up per-subaccount strategy from config/strategies.yaml.
+#     • Uses per-strategy exit_profile when present, otherwise falls back to default.
+# - Trailing SL:
+#     • Base SL still comes from ATR/R logic.
+#     • SL is trailed off best favorable price using R-based distance.
+# - Still:
+#     • Uses Bybit V5 PRIVATE WEBSOCKET for near-instant position updates (optional).
+#     • NEVER nukes the whole TP ladder on size change (amend-in-place).
+#     • Keeps SL attached via trading-stop helper.
+#     • ATR caching to avoid hammering indicators.
 #
-# New behavior (v4):
+# New behavior (v4 recap + v5):
 #   1) "No TP" watchdog:
 #      - On every cycle, for every open position, we inspect open orders.
 #      - If ALL TP orders have been canceled, we IMMEDIATELY rebuild the TP ladder
-#        (5 exits or a single mid TP for tiny positions), regardless of whether
+#        (7 exits or a single mid TP for tiny positions), regardless of whether
 #        avgPrice/size changed.
 #
 #   2) Manual TP override respect:
@@ -26,13 +32,24 @@
 #           • Position is closed, or
 #           • All TPs are canceled and we rebuild from scratch.
 #
+#   3) Exit profiles (v5, strategy-aware):
+#      - Each strategy in config/strategies.yaml may define an exit_profile, e.g.:
+#           exit_profile:
+#             name: standard_7
+#             tp_count: 7
+#             trailing_sl: true
+#      - If absent, we fall back to DEFAULT_EXIT_PROFILE (7 TPs + trailing SL).
+#
 #   ENV knobs:
 #     TPM_USE_WEBSOCKET=true|false
-#     TPM_POLL_SECONDS=2        (HTTP mode only; also used as cadence for TP checks)
+#     TPM_POLL_SECONDS=2          (HTTP mode only; also used as cadence for TP checks)
 #     TPM_ATR_CACHE_SEC=60
 #     TPM_RESPECT_MANUAL_TPS=true|false   (default true)
+#     TPM_TRAIL_R_MULT=1.0        (R-multiple used for trailing distance)
 #
 #   ATR_MULT, TP5_MAX_ATR_MULT, TP5_MAX_PCT, R_MIN_TICKS come from flashback_common or defaults.
+#   Note: TP5_* names are kept for backward compatibility; they still cap the *furthest* TP
+#         even though we now use 7 levels.
 
 import os
 import time
@@ -63,6 +80,12 @@ try:
 except ImportError:
     websocket = None
 
+# Strategy registry (for per-sub exit profiles)
+try:
+    from app.core import strategies as strat_mod  # expects get_strategy_for_sub(sub_uid)
+except Exception:
+    strat_mod = None  # type: ignore
+
 # ---- Spacing params from common module if present ----
 try:
     from app.core.flashback_common import ATR_MULT, TP5_MAX_ATR_MULT, TP5_MAX_PCT, R_MIN_TICKS
@@ -74,6 +97,9 @@ except Exception:
 
 CATEGORY = "linear"
 QUOTE = "USDT"
+
+# Core number of rungs for the default ladder.
+CORE_TP_COUNT = 7
 
 # Polling cadence (HTTP mode only + safety watchdog)
 POLL_SECONDS = int(os.getenv("TPM_POLL_SECONDS", "2"))
@@ -89,12 +115,30 @@ WS_SECRET = os.getenv("BYBIT_MAIN_TRADE_SECRET", "")
 # Respect manual TP modifications (prices) or not
 _RESPECT_MANUAL_TPS = os.getenv("TPM_RESPECT_MANUAL_TPS", "true").strip().lower() == "true"
 
+# Trailing SL config
+_TRAIL_R_MULT = Decimal(os.getenv("TPM_TRAIL_R_MULT", "1.0"))
+
 # ATR cache: symbol -> (ts, atr)
 _ATR_CACHE_TTL = int(os.getenv("TPM_ATR_CACHE_SEC", "60"))
 _ATR_CACHE: Dict[str, Tuple[float, Decimal]] = {}
 
 # Manual TP override per symbol: if True, we do NOT amend TP prices for that symbol.
 _MANUAL_TP_MODE: Dict[str, bool] = {}
+
+# Trailing SL state per symbol:
+#   symbol -> {
+#       "entry": Decimal,
+#       "base_sl": Decimal,
+#       "best": Decimal,
+#   }
+_TRAIL_STATE: Dict[str, Dict[str, Decimal]] = {}
+
+# Default exit profile (used if strategy lookup fails or is absent)
+DEFAULT_EXIT_PROFILE = {
+    "name": "standard_7",
+    "tp_count": CORE_TP_COUNT,
+    "trailing_sl": True,
+}
 
 
 def _open_orders(symbol: str) -> List[dict]:
@@ -136,14 +180,15 @@ def _get_atr(symbol: str, entry: Decimal) -> Decimal:
 
 def _compute_exit_grid(symbol: str, side_now: str, entry: Decimal) -> Tuple[Decimal, List[Decimal]]:
     """
-    Returns (stop_loss_price, [tp1..tp5]) snapped to valid tick.
+    Returns (stop_loss_price, [tp1..tpN]) snapped to valid tick.
 
     Spacing logic:
       - Base R = max(ATR * ATR_MULT, R_MIN_TICKS * tick)
-      - tp_i = entry ± i*R depending on side
-      - tp5 capped by:
-          • TP5_MAX_ATR_MULT * ATR distance
-          • TP5_MAX_PCT% of entry
+      - tpi = entry ± i*R depending on side, for i in [1..CORE_TP_COUNT]
+      - furthest TP capped by:
+          • TP5_MAX_ATR_MULT * ATR distance   (legacy name, still used as max-multiple)
+          • TP5_MAX_PCT% of entry             (legacy name, still used as max % band)
+      - If cap is hit, R is compressed so that tpn - entry == max_tp_dist.
     """
     tick, _step, _min_notional = get_ticks(symbol)
 
@@ -160,28 +205,172 @@ def _compute_exit_grid(symbol: str, side_now: str, entry: Decimal) -> Tuple[Deci
     if R < min_R:
         R = min_R
 
-    # Cap tp5
-    max_tp5_dist_atr = atr * Decimal(TP5_MAX_ATR_MULT)
-    max_tp5_dist_pct = entry * (Decimal(TP5_MAX_PCT) / Decimal(100))
-    max_tp5_dist = min(max_tp5_dist_atr, max_tp5_dist_pct)
+    # Cap furthest TP
+    max_tp_dist_atr = atr * Decimal(TP5_MAX_ATR_MULT)
+    max_tp_dist_pct = entry * (Decimal(TP5_MAX_PCT) / Decimal(100))
+    max_tp_dist = min(max_tp_dist_atr, max_tp_dist_pct)
 
     if side_now.lower() == "buy":
         sl = entry - R
-        tps = [entry + i * R for i in range(1, 6)]
-        if (tps[-1] - entry) > max_tp5_dist:
-            R = max_tp5_dist / Decimal(5)
-            tps = [entry + i * R for i in range(1, 6)]
+        tps = [entry + i * R for i in range(1, CORE_TP_COUNT + 1)]
+        if (tps[-1] - entry) > max_tp_dist:
+            R = max_tp_dist / Decimal(CORE_TP_COUNT)
+            tps = [entry + i * R for i in range(1, CORE_TP_COUNT + 1)]
     else:
         sl = entry + R
-        tps = [entry - i * R for i in range(1, 6)]
-        if (entry - tps[-1]) > max_tp5_dist:
-            R = max_tp5_dist / Decimal(5)
-            tps = [entry - i * R for i in range(1, 6)]
+        tps = [entry - i * R for i in range(1, CORE_TP_COUNT + 1)]
+        if (entry - tps[-1]) > max_tp_dist:
+            R = max_tp_dist / Decimal(CORE_TP_COUNT)
+            tps = [entry - i * R for i in range(1, CORE_TP_COUNT + 1)]
 
     # Snap to tick
     sl = psnap(sl, tick)
     tps = [psnap(px, tick) for px in tps]
     return sl, tps
+
+
+def _get_exit_profile_for_position(p: dict) -> Dict[str, object]:
+    """
+    Determine exit profile for a given position using strategy config when possible.
+
+    Expected strategy config (config/strategies.yaml):
+      - Each sub_uid strategy may define:
+          exit_profile:
+            name: standard_7
+            tp_count: 7
+            trailing_sl: true
+    """
+    profile = dict(DEFAULT_EXIT_PROFILE)
+
+    if strat_mod is None:
+        return profile
+
+    # sub_uid field may be present depending on how list_open_positions is wired.
+    sub_uid = (
+        p.get("sub_uid")
+        or p.get("subAccountId")
+        or p.get("accountId")
+        or p.get("subId")
+    )
+    if not sub_uid:
+        return profile
+
+    try:
+        strat = strat_mod.get_strategy_for_sub(str(sub_uid))
+    except Exception:
+        strat = None
+
+    if not strat:
+        return profile
+
+    cfg = strat.get("exit_profile") or strat.get("exitProfile")
+    if isinstance(cfg, dict):
+        # Merge dict into profile
+        if "name" in cfg:
+            profile["name"] = cfg["name"]
+        if "tp_count" in cfg:
+            try:
+                tp_count_val = int(cfg["tp_count"])
+                if tp_count_val > 0:
+                    profile["tp_count"] = min(tp_count_val, CORE_TP_COUNT)
+            except Exception:
+                pass
+        if "trailing_sl" in cfg:
+            profile["trailing_sl"] = bool(cfg["trailing_sl"])
+    elif isinstance(cfg, str):
+        # Named profile; for now we only meaningfully support "standard_7".
+        name = cfg.strip().lower()
+        if name == "standard_7":
+            profile["name"] = "standard_7"
+            profile["tp_count"] = CORE_TP_COUNT
+            profile["trailing_sl"] = True
+
+    return profile
+
+
+def _compute_trailing_sl(
+    symbol: str,
+    side_now: str,
+    entry: Decimal,
+    base_sl: Decimal,
+    tps: List[Decimal],
+    trailing_enabled: bool,
+) -> Decimal:
+    """
+    Compute a trailing SL based on best favorable price and R distance.
+
+    Behavior:
+      - If trailing is disabled, returns base_sl.
+      - R is derived from distance between entry and first TP (or entry/base_sl).
+      - Trailing distance = R * TPM_TRAIL_R_MULT.
+      - For longs:
+          best = max(best, last_price)
+          sl = max(base_sl, best - trail_dist)
+        For shorts:
+          best = min(best, last_price)
+          sl = min(base_sl, best + trail_dist)
+      - SL never "un-trails" (we don't move it away from price).
+    """
+    if not trailing_enabled or _TRAIL_R_MULT <= 0:
+        return base_sl
+
+    try:
+        price = Decimal(str(last_price(symbol)))
+    except Exception:
+        # If we can't get price, just keep base SL.
+        return base_sl
+
+    if price <= 0:
+        return base_sl
+
+    # Derive R from first TP or base SL if needed
+    if tps:
+        R = abs(tps[0] - entry)
+    else:
+        R = abs(entry - base_sl)
+
+    if R <= 0:
+        return base_sl
+
+    trail_dist = R * _TRAIL_R_MULT
+
+    state = _TRAIL_STATE.get(symbol)
+    if state is None or state.get("entry") != entry or state.get("base_sl") != base_sl:
+        # New position or re-anchored; reset trail state.
+        state = {
+            "entry": entry,
+            "base_sl": base_sl,
+            "best": price,
+        }
+    else:
+        # Update best favorable price
+        best = state.get("best", entry)
+        if side_now.lower() == "buy":
+            if price > best:
+                best = price
+        else:
+            # For shorts, "best" is the lowest price seen
+            if price < best:
+                best = price
+        state["best"] = best
+
+    best = state["best"]
+
+    if side_now.lower() == "buy":
+        sl_candidate = best - trail_dist
+        # Never trail below the original base SL
+        sl_new = max(base_sl, sl_candidate)
+    else:
+        sl_candidate = best + trail_dist
+        # For shorts, SL is above price; never trail above base SL
+        sl_new = min(base_sl, sl_candidate)
+
+    # Snap to tick
+    tick, _step, _ = get_ticks(symbol)
+    sl_new = psnap(sl_new, tick)
+
+    _TRAIL_STATE[symbol] = state
+    return sl_new
 
 
 def _amend_tp_order(symbol: str, order: dict,
@@ -218,7 +407,8 @@ def _amend_tp_order(symbol: str, order: dict,
 
 def _detect_manual_override(symbol: str,
                             tpo: List[dict],
-                            target_tps: List[Decimal]) -> bool:
+                            target_tps: List[Decimal],
+                            core_count: int) -> bool:
     """
     Heuristic: if a majority of TP prices deviate from our ideal grid by more than
     ~2 ticks, assume the user manually moved them and enter manual TP mode.
@@ -233,7 +423,7 @@ def _detect_manual_override(symbol: str,
     cur_prices = sorted(Decimal(o["price"]) for o in tpo)
     tgt_sorted = sorted(target_tps)
 
-    n = min(len(cur_prices), len(tgt_sorted), 5)
+    n = min(len(cur_prices), len(tgt_sorted), core_count)
     if n == 0:
         return False
 
@@ -246,26 +436,46 @@ def _detect_manual_override(symbol: str,
     return mismatches >= 2
 
 
-def _sync_tp_ladder(symbol: str, side_now: str, size: Decimal, tps: List[Decimal]) -> None:
+def _sync_tp_ladder(symbol: str,
+                    side_now: str,
+                    size: Decimal,
+                    tps: List[Decimal],
+                    tp_count: int) -> None:
     """
-    Ensure we have a 5-TP ladder, **without** ever nuking the book.
+    Ensure we have a TP ladder (up to CORE_TP_COUNT), **without** ever nuking the book.
 
     Behavior:
-      - If no TPs: place fresh 5 reduce-only orders (or single mid TP if tiny).
+      - If no TPs:
+          • place fresh `tp_count` reduce-only orders (or single mid TP if tiny).
       - If some TPs:
           • If TPM_RESPECT_MANUAL_TPS=true and we detect a manual override,
             we DO NOT amend TP prices; we only (optionally) rebalance qty.
           • Otherwise: we amend TPs in place to match target prices / equal qty splits.
-      - Extra TPs (from manual tinkering) are left alone; we only manage up to 5 core levels.
+      - Extra TPs (from manual tinkering) are left alone; we only manage up to CORE_TP_COUNT
+        and only the first `tp_count` as the "core ladder".
     """
+    # Clamp tp_count to sane range
+    if tp_count <= 0:
+        tp_count = 1
+    if tp_count > CORE_TP_COUNT:
+        tp_count = CORE_TP_COUNT
+
     tick, step, _ = get_ticks(symbol)
 
+    target_tps = tps[:tp_count]
+
     # Very small positions: avoid zero-qty orders
-    each_default = qdown(size / Decimal(5), step)
+    each_default = qdown(size / Decimal(tp_count), step)
     if each_default <= 0:
-        # Position too tiny for 5-way split; place a single TP at tp3 to avoid nonsense.
-        mid_tp = tps[2]  # center of the ladder
-        place_reduce_tp(symbol, side_now, qdown(size, step), mid_tp)
+        # Position too tiny for full split; place a single TP at mid ladder to avoid nonsense.
+        if target_tps:
+            mid_idx = min(len(target_tps) - 1, tp_count // 2)
+            mid_tp = target_tps[mid_idx]
+        else:
+            # Fallback: just use entry-nearest TP (if ever missing).
+            mid_tp = tps[0] if tps else None
+        if mid_tp is not None:
+            place_reduce_tp(symbol, side_now, qdown(size, step), mid_tp)
         return
 
     orders_all = _open_orders(symbol)
@@ -275,7 +485,7 @@ def _sync_tp_ladder(symbol: str, side_now: str, size: Decimal, tps: List[Decimal
     if not tpo:
         # If user nuked all TPs, we assume they want the bot back in charge.
         _MANUAL_TP_MODE.pop(symbol, None)
-        for px in tps:
+        for px in target_tps:
             place_reduce_tp(symbol, side_now, each_default, px)
         return
 
@@ -283,7 +493,7 @@ def _sync_tp_ladder(symbol: str, side_now: str, size: Decimal, tps: List[Decimal
 
     # Possibly enter manual TP mode if we detect significant deviation from our grid.
     if _RESPECT_MANUAL_TPS and not manual_mode:
-        if _detect_manual_override(symbol, tpo, tps):
+        if _detect_manual_override(symbol, tpo, target_tps, CORE_TP_COUNT):
             manual_mode = True
             _MANUAL_TP_MODE[symbol] = True
             try:
@@ -320,14 +530,14 @@ def _sync_tp_ladder(symbol: str, side_now: str, size: Decimal, tps: List[Decimal
     # --- Full auto mode (no manual override) below ---
 
     # Sort both existing orders and target tps by price for consistent pairing
-    tps_sorted = sorted(tps)
+    tps_sorted = sorted(target_tps)
     tpo_sorted = sorted(tpo, key=lambda o: Decimal(o["price"]))
 
-    # We'll manage up to 5 orders; any extras are ignored (but not canceled).
-    managed_orders = tpo_sorted[:5]
+    # We'll manage up to tp_count orders; any extras are ignored (but not canceled).
+    managed_orders = tpo_sorted[:tp_count]
 
     # 1) Amend or place for each target level
-    for idx in range(5):
+    for idx in range(tp_count):
         target_px = tps_sorted[idx]
         if idx < len(managed_orders):
             o = managed_orders[idx]
@@ -355,13 +565,16 @@ def _sync_tp_ladder(symbol: str, side_now: str, size: Decimal, tps: List[Decimal
 def _ensure_exits_for_position(p: dict,
                                seen_state: Dict[str, Tuple[Decimal, Decimal]]) -> None:
     """
-    For a single position record, ensure SL + 5TP exist and are balanced with size.
+    For a single position record, ensure SL + TP ladder exist and are balanced with size.
 
     Important changes:
       - We NO LONGER skip work just because (avgPrice, size) didn't change.
         We always check that TPs exist; if they're gone, we rebuild immediately.
       - We only send the "Exits set" Telegram message when the position state changes,
         to avoid spamming on every poll.
+      - Exit behavior is now strategy-aware:
+          • Uses per-sub strategy exit_profile when possible.
+          • Supports varying TP counts (up to CORE_TP_COUNT) and trailing SL toggle.
     """
     symbol = p["symbol"]
     side_now = p["side"]  # "Buy"/"Sell"
@@ -372,25 +585,50 @@ def _ensure_exits_for_position(p: dict,
         # Flat; nothing to do
         seen_state.pop(symbol, None)
         _MANUAL_TP_MODE.pop(symbol, None)
+        _TRAIL_STATE.pop(symbol, None)
         return
 
     prev_state = seen_state.get(symbol)
     state = (entry, size)
 
-    # 1) Compute grid
-    sl, tps = _compute_exit_grid(symbol, side_now, entry)
+    # 0) Exit profile (strategy-aware)
+    exit_profile = _get_exit_profile_for_position(p)
+    tp_count = int(exit_profile.get("tp_count", CORE_TP_COUNT) or CORE_TP_COUNT)
+    trailing_sl = bool(exit_profile.get("trailing_sl", True))
 
-    # 2) Attach/update SL (trading stop; Bybit handles idempotency)
-    set_stop_loss(symbol, sl)
+    # 1) Compute grid (base SL + full CORE_TP_COUNT ladder)
+    base_sl, tps_full = _compute_exit_grid(symbol, side_now, entry)
 
-    # 3) Ensure TP ladder via amend-only logic (with manual override respect)
-    _sync_tp_ladder(symbol, side_now, size, tps)
+    # 2) Compute trailing SL (if enabled)
+    sl_effective = _compute_trailing_sl(
+        symbol=symbol,
+        side_now=side_now,
+        entry=entry,
+        base_sl=base_sl,
+        tps=tps_full,
+        trailing_enabled=trailing_sl,
+    )
 
-    # 4) Notify only on state change (entry/size)
+    # 3) Attach/update SL (trading stop; Bybit handles idempotency)
+    set_stop_loss(symbol, sl_effective)
+
+    # 4) Ensure TP ladder via amend-only logic (with manual override respect)
+    _sync_tp_ladder(symbol, side_now, size, tps_full, tp_count=tp_count)
+
+    # 5) Notify only on state change (entry/size)
     if prev_state != state:
-        send_tg(f"🎯 Exits set {symbol} {side_now} | size {size} | SL {sl} | TPs {', '.join(map(str, tps))}")
+        used_tps = tps_full[:tp_count]
+        try:
+            send_tg(
+                f"🎯 Exits set {symbol} {side_now} | size {size} | "
+                f"profile {exit_profile.get('name')} | "
+                f"SL {sl_effective} | TPs {', '.join(map(str, used_tps))}"
+            )
+        except Exception:
+            # Don't die on Telegram errors
+            pass
 
-    # 5) Track current state
+    # 6) Track current state
     seen_state[symbol] = state
 
 
@@ -403,7 +641,7 @@ def _loop_http_poll() -> None:
     Legacy but now much safer/faster:
     - Polls positions every POLL_SECONDS
     - On every pass, for each open position, ensures:
-        • SL is attached
+        • SL (now trailing-aware) is attached
         • TP ladder exists (recreated immediately if user nuked it)
     - Uses amend-only TP logic and respects manual TP prices if enabled.
     """
@@ -425,6 +663,7 @@ def _loop_http_poll() -> None:
                 if s not in current_symbols:
                     seen.pop(s, None)
                     _MANUAL_TP_MODE.pop(s, None)
+                    _TRAIL_STATE.pop(s, None)
 
             time.sleep(POLL_SECONDS)
         except Exception as e:
@@ -502,14 +741,17 @@ def _handle_ws_position_message(msg: dict,
             # Flat now; clear state
             seen.pop(symbol, None)
             _MANUAL_TP_MODE.pop(symbol, None)
+            _TRAIL_STATE.pop(symbol, None)
             continue
 
-        # Normalize to match REST shape
+        # Normalize to match REST shape (and keep any sub_uid-ish keys intact)
         norm = {
             "symbol": symbol,
             "side": p.get("side"),
             "avgPrice": p.get("avgPrice"),
             "size": p.get("size"),
+            # Pass through potential subaccount identifiers for strategy lookup
+            "sub_uid": p.get("sub_uid") or p.get("subAccountId") or p.get("accountId") or p.get("subId"),
         }
         _ensure_exits_for_position(norm, seen_state=seen)
 
@@ -518,6 +760,7 @@ def _handle_ws_position_message(msg: dict,
         if s not in current_symbols:
             seen.pop(s, None)
             _MANUAL_TP_MODE.pop(s, None)
+            _TRAIL_STATE.pop(s, None)
 
 
 def _loop_ws() -> None:
@@ -602,8 +845,16 @@ def loop():
     Entry point called by supervisor.
     Chooses WebSocket mode or HTTP poll mode depending on TPM_USE_WEBSOCKET.
 
+    Behavior summary:
+      - HTTP mode:
+          • Polls positions every POLL_SECONDS.
+          • Ensures trailing SL + strategy-aware TP ladder on every pass.
+      - WS mode:
+          • Reacts to private 'position' pushes near-instantly.
+          • Falls back to HTTP mode on hard WS failure.
+
     For your "absolutely unacceptable" TP-gap problem:
-      - HTTP mode now ALWAYS checks for missing TPs every POLL_SECONDS.
+      - HTTP mode still ALWAYS checks for missing TPs every POLL_SECONDS.
       - If all TPs are canceled on an open position, they are rebuilt on the
         very next poll, regardless of size/avgPrice changes.
     """
