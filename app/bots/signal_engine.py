@@ -1,12 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Flashback / Base44 — Signal Engine v1 (AI-logging enabled)
+Flashback / Base44 — Signal Engine v2 (Strategy-aware + AI-logging)
 
-What this does (MVP version):
-- Loads config from .env (symbols, timeframes, polling/heartbeat).
+What this does:
+- If SIG_USE_STRATEGIES=true (default) and app.core.strategy_config is available:
+    • Builds a universe from StrategyProfile definitions:
+        (symbol, timeframe) -> list of StrategyProfile(s)
+    • Only scans symbols/TFs belonging to at least one active strategy.
+    • Emits signals tagged with strategy_id + sub_uid for each matched strategy.
+- Otherwise (fallback mode):
+    • Uses SIG_SYMBOLS / SIG_TIMEFRAMES from .env like v1, generic signals.
+
+Shared behavior:
 - Uses Bybit public kline endpoint to fetch recent candles.
-- For each (symbol, timeframe), decides a very simple LONG/SHORT bias:
+- For each (symbol, timeframe), decides a simple LONG/SHORT bias:
     • LONG  if last close > previous close AND last close > simple MA(last N closes)
     • SHORT if last close < previous close AND last close < simple MA(last N closes)
     • Otherwise: no signal.
@@ -14,18 +22,16 @@ What this does (MVP version):
 - Sends human-readable alerts via the main Telegram notifier.
 - Logs every signal into the AI event store via app.core.ai_hooks.log_signal_from_engine.
 
-This is intentionally simple logic. The important part is:
-  → Every time the engine emits a signal, it is recorded in state/ai_store.db
-
 .env keys used (all optional with defaults):
-    BYBIT_BASE              = https://api.bybit.com
+    BYBIT_BASE                = https://api.bybit.com
 
-    SIG_ENABLED             = true
-    SIG_DRY_RUN             = true           # currently unused (no orders placed)
-    SIG_SYMBOLS             = BTCUSDT,ETHUSDT
-    SIG_TIMEFRAMES          = 5,15
-    SIG_POLL_SEC            = 15
-    SIG_HEARTBEAT_SEC       = 300
+    SIG_ENABLED               = true
+    SIG_DRY_RUN               = true           # currently unused (no orders placed)
+    SIG_SYMBOLS               = BTCUSDT,ETHUSDT        # fallback-only
+    SIG_TIMEFRAMES            = 5,15                   # fallback-only
+    SIG_POLL_SEC              = 15
+    SIG_HEARTBEAT_SEC         = 300
+    SIG_USE_STRATEGIES        = true          # use app.core.strategy_config universe
 
 Telegram:
     Uses app.core.notifier_bot.get_notifier("main")
@@ -39,7 +45,6 @@ from __future__ import annotations
 
 import os
 import time
-import math
 from pathlib import Path
 from typing import Dict, List, Tuple, Any, Optional
 
@@ -61,6 +66,15 @@ from app.core.ai_hooks import log_signal_from_engine
 # Telegram notifier (same pattern as supervisor)
 from app.core.notifier_bot import get_notifier
 
+# Optional strategy config
+try:
+    from app.core.strategy_config import StrategyProfile, STRATEGIES
+    _HAS_STRATEGY_CONFIG = True
+except Exception:
+    StrategyProfile = None  # type: ignore
+    STRATEGIES = {}         # type: ignore
+    _HAS_STRATEGY_CONFIG = False
+
 
 # ---------- Paths & Env ----------
 
@@ -78,6 +92,7 @@ load_dotenv(dotenv_path=ENV_PATH)
 
 BYBIT_BASE = os.getenv("BYBIT_BASE", "https://api.bybit.com").rstrip("/")
 
+
 def _parse_bool(val: Optional[str], default: bool) -> bool:
     if val is None:
         return default
@@ -88,8 +103,10 @@ def _parse_bool(val: Optional[str], default: bool) -> bool:
         return False
     return default
 
+
 SIG_ENABLED = _parse_bool(os.getenv("SIG_ENABLED"), True)
 SIG_DRY_RUN = _parse_bool(os.getenv("SIG_DRY_RUN"), True)
+SIG_USE_STRATEGIES = _parse_bool(os.getenv("SIG_USE_STRATEGIES"), True)
 
 _raw_symbols = os.getenv("SIG_SYMBOLS", "BTCUSDT,ETHUSDT")
 SIG_SYMBOLS: List[str] = [s.strip().upper() for s in _raw_symbols.split(",") if s.strip()]
@@ -115,12 +132,15 @@ def tg_info(msg: str) -> None:
     except Exception:
         print(f"[signal_engine][TG error] {msg}")
 
+
 def tg_error(msg: str) -> None:
     try:
         tg.error(msg)
     except Exception:
         print(f"[signal_engine][TG error] {msg}")
 
+
+# ---------- Bybit Kline Fetcher ----------
 
 def fetch_recent_klines(
     symbol: str,
@@ -247,19 +267,63 @@ def tf_display(tf: str) -> str:
     return f"{tf}m"
 
 
+# ---------- Strategy-aware universe ----------
+
+def build_universe() -> Dict[Tuple[str, str], List[StrategyProfile]]:
+    """
+    Build mapping:
+        (symbol, timeframe_raw) -> [StrategyProfile, ...]
+    When SIG_USE_STRATEGIES is enabled and STRATEGIES are available,
+    we use StrategyProfile.symbols / .timeframes.
+    Otherwise, we fall back to SIG_SYMBOLS / SIG_TIMEFRAMES with no strategies.
+    """
+    universe: Dict[Tuple[str, str], List[StrategyProfile]] = {}
+
+    if SIG_USE_STRATEGIES and _HAS_STRATEGY_CONFIG and STRATEGIES:
+        # Only consider strategies that are at least PAPER/LIVE (automation_mode != "OFF")
+        for s in STRATEGIES.values():
+            # type: ignore[attr-defined] for StrategyProfile fields
+            symbols = getattr(s, "symbols", None) or []
+            tfs = getattr(s, "timeframes", None) or []
+            if not symbols or not tfs:
+                continue
+
+            # If strategy is completely OFF, we still may want signals for learning,
+            # so we do NOT filter by automation_mode here. You can change this
+            # later if you want only PAPER/LIVE.
+            for sym in symbols:
+                sym_u = sym.upper()
+                for tf in tfs:
+                    key = (sym_u, tf)
+                    universe.setdefault(key, []).append(s)
+
+    # Fallback if no strategies or disabled
+    if not universe:
+        for sym in SIG_SYMBOLS:
+            for tf in SIG_TIMEFRAMES:
+                universe.setdefault((sym, tf), [])
+
+    return universe
+
+
 # ---------- Main Loop ----------
 
 def main() -> None:
-    print("=== Flashback Signal Engine v1 (AI-logging enabled) ===")
+    universe = build_universe()
+    all_symbols = sorted({k[0] for k in universe.keys()})
+    all_tfs = sorted({k[1] for k in universe.keys()})
+
+    print("=== Flashback Signal Engine v2 (Strategy-aware, AI-logging) ===")
     print(f"Project root: {ROOT_DIR}")
     print(f"Using .env:   {ENV_PATH} (exists={ENV_PATH.exists()})")
     print(f"Bybit base:   {BYBIT_BASE}")
     print(f"SIG_ENABLED:  {SIG_ENABLED}")
     print(f"SIG_DRY_RUN:  {SIG_DRY_RUN}")
-    print(f"Symbols:      {SIG_SYMBOLS}")
-    print(f"Timeframes:   {SIG_TIMEFRAMES}")
-    print(f"Poll every:   {SIG_POLL_SEC} sec")
-    print(f"Heartbeat:    {SIG_HEARTBEAT_SEC} sec")
+    print(f"SIG_USE_STRATEGIES: {SIG_USE_STRATEGIES} (has_config={_HAS_STRATEGY_CONFIG})")
+    print(f"Universe symbols:    {all_symbols}")
+    print(f"Universe timeframes: {all_tfs}")
+    print(f"Poll every:          {SIG_POLL_SEC} sec")
+    print(f"Heartbeat:           {SIG_HEARTBEAT_SEC} sec")
 
     if not SIG_ENABLED:
         msg = "⚠️ Signal engine is disabled (SIG_ENABLED=false). Exiting."
@@ -267,12 +331,28 @@ def main() -> None:
         tg_info(msg)
         return
 
-    tg_info(
-        "🚀 Signal Engine v1 started.\n"
-        f"Symbols: {', '.join(SIG_SYMBOLS)}\n"
-        f"TFs: {', '.join(tf_display(t) for t in SIG_TIMEFRAMES)}\n"
-        f"Poll: {SIG_POLL_SEC}s | Heartbeat: {SIG_HEARTBEAT_SEC}s"
-    )
+    if not universe:
+        msg = "⚠️ Signal engine universe is empty (no symbols/timeframes). Exiting."
+        print(msg)
+        tg_info(msg)
+        return
+
+    if SIG_USE_STRATEGIES and _HAS_STRATEGY_CONFIG and STRATEGIES:
+        strat_ids = ", ".join(sorted(STRATEGIES.keys()))
+        tg_info(
+            "🚀 Signal Engine v2 started (strategy-aware).\n"
+            f"Symbols: {', '.join(all_symbols)}\n"
+            f"TFs: {', '.join(tf_display(t) for t in all_tfs)}\n"
+            f"Strategies: {strat_ids}\n"
+            f"Poll: {SIG_POLL_SEC}s | Heartbeat: {SIG_HEARTBEAT_SEC}s"
+        )
+    else:
+        tg_info(
+            "🚀 Signal Engine v2 started (fallback mode, .env universe).\n"
+            f"Symbols: {', '.join(all_symbols)}\n"
+            f"TFs: {', '.join(tf_display(t) for t in all_tfs)}\n"
+            f"Poll: {SIG_POLL_SEC}s | Heartbeat: {SIG_HEARTBEAT_SEC}s"
+        )
 
     # Keep track of last bar we emitted a signal for per (symbol, timeframe)
     last_signal_bar: Dict[Tuple[str, str], int] = {}
@@ -284,89 +364,141 @@ def main() -> None:
         loop_start = time.time()
         total_signals_this_loop = 0
 
-        for symbol in SIG_SYMBOLS:
-            for tf in SIG_TIMEFRAMES:
-                key = (symbol, tf)
+        # cache candles per (symbol, tf) per loop
+        candles_cache: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
 
-                try:
-                    candles = fetch_recent_klines(symbol, tf, limit=max(MA_LOOKBACK + 2, 10))
-                except Exception as e:
-                    print(f"[WARN] Failed to fetch klines for {symbol} {tf}: {type(e).__name__}: {e}")
-                    tg_error(f"⚠️ Signal engine kline error for {symbol} {tf}: {type(e).__name__}")
-                    continue
+        for (symbol, tf), strat_list in universe.items():
+            key = (symbol, tf)
 
-                if len(candles) < 3:
-                    print(f"[INFO] Not enough candles yet for {symbol} {tf}")
-                    continue
+            try:
+                candles = fetch_recent_klines(symbol, tf, limit=max(MA_LOOKBACK + 2, 10))
+                candles_cache[key] = candles
+            except Exception as e:
+                print(f"[WARN] Failed to fetch klines for {symbol} {tf}: {type(e).__name__}: {e}")
+                tg_error(f"⚠️ Signal engine kline error for {symbol} {tf}: {type(e).__name__}")
+                continue
 
-                latest_bar = candles[-1]
-                bar_ts = latest_bar["ts_ms"]
+            if len(candles) < 3:
+                print(f"[INFO] Not enough candles yet for {symbol} {tf}")
+                continue
 
-                # Only act once per bar for this (symbol, timeframe)
-                last_ts = last_signal_bar.get(key)
-                if last_ts is not None and bar_ts <= last_ts:
-                    # Already processed this bar
-                    continue
+            latest_bar = candles[-1]
+            bar_ts = latest_bar["ts_ms"]
 
-                side, debug = compute_simple_signal(candles)
-                if side is None:
-                    # No signal on this bar; still update last processed bar to avoid re-eval
-                    last_signal_bar[key] = bar_ts
-                    continue
+            # Only act once per bar for this (symbol, timeframe)
+            last_ts = last_signal_bar.get(key)
+            if last_ts is not None and bar_ts <= last_ts:
+                # Already processed this bar
+                continue
 
+            side, debug = compute_simple_signal(candles)
+            if side is None:
+                # No signal on this bar; still update last processed bar to avoid re-eval
                 last_signal_bar[key] = bar_ts
-                total_signals_this_loop += 1
+                continue
 
-                tf_label = tf_display(tf)
-                reason = debug.get("reason", "n/a")
-                last_c = debug.get("last_close")
-                ma = debug.get("ma")
+            last_signal_bar[key] = bar_ts
+            total_signals_this_loop += 1
 
-                # Human-readable Telegram alert
+            tf_label = tf_display(tf)
+            reason = debug.get("reason", "n/a")
+            last_c = debug.get("last_close")
+            ma = debug.get("ma")
+
+            # Determine which strategies this signal applies to
+            # strat_list may be empty in fallback mode.
+            applicable_strats: List[StrategyProfile] = strat_list or []
+
+            if applicable_strats:
+                strat_ids = ", ".join(s.id for s in applicable_strats)  # type: ignore[attr-defined]
                 msg = (
-                    f"📡 *Signal Engine v1* — {symbol} / {tf_label}\n"
+                    f"📡 *Signal Engine v2* — {symbol} / {tf_label}\n"
                     f"Side: *{side}*\n"
+                    f"Strategies: `{strat_ids}`\n"
                     f"Last close: `{last_c}` | MA({len([c['close'] for c in candles[-MA_LOOKBACK:]])}): `{ma}`\n"
                     f"Reason: `{reason}`\n"
                     f"(No orders placed yet, logging only.)"
                 )
-                tg_info(msg)
+            else:
+                msg = (
+                    f"📡 *Signal Engine v2* — {symbol} / {tf_label}\n"
+                    f"Side: *{side}*\n"
+                    f"Last close: `{last_c}` | MA({len([c['close'] for c in candles[-MA_LOOKBACK:]])}): `{ma}`\n"
+                    f"Reason: `{reason}`\n"
+                    f"(No orders placed yet, logging only, generic universe.)"
+                )
 
-                # AI logging hook
-                # Note: owner="AUTO_STRATEGY" for now; later we can route by subaccount/role.
-                regime_tags = [reason]
-                extra = {
-                    "engine": "signal_engine_v1",
-                    "raw_debug": debug,
-                    "tf_raw": tf,
-                }
+            tg_info(msg)
 
+            # AI logging hook
+            regime_tags = [reason]
+            base_extra = {
+                "engine": "signal_engine_v2",
+                "raw_debug": debug,
+                "tf_raw": tf,
+            }
+
+            if applicable_strats:
+                for strat in applicable_strats:
+                    # type: ignore[attr-defined] for dataclass fields
+                    extra = dict(base_extra)
+                    extra.update(
+                        {
+                            "strategy_id": strat.id,
+                            "strategy_name": strat.name,
+                            "strategy_automation_mode": getattr(strat, "automation_mode", None),
+                        }
+                    )
+                    signal_id = log_signal_from_engine(
+                        symbol=symbol,
+                        timeframe=tf_label,
+                        side=side,
+                        source="signal_engine_v2",
+                        confidence=None,
+                        stop_hint=None,
+                        owner="AUTO_STRATEGY",
+                        sub_uid=getattr(strat, "preferred_sub_uid", None),
+                        strategy_role=strat.id,
+                        regime_tags=regime_tags,
+                        extra=extra,
+                    )
+                    print(
+                        f"[SIGNAL] {symbol} {tf_label} {side} | "
+                        f"strategy={strat.id} | signal_id={signal_id} | reason={reason}"
+                    )
+            else:
+                # Fallback: generic signal, no specific strategy
+                extra = dict(base_extra)
+                extra.update({"strategy_id": None, "strategy_name": None})
                 signal_id = log_signal_from_engine(
                     symbol=symbol,
                     timeframe=tf_label,
                     side=side,
-                    source="signal_engine_v1",
-                    confidence=None,          # can be wired to a score later
-                    stop_hint=None,           # can be wired to ATR-based SL etc.
+                    source="signal_engine_v2",
+                    confidence=None,
+                    stop_hint=None,
                     owner="AUTO_STRATEGY",
                     sub_uid=None,
                     strategy_role="GENERIC_SIGNAL_ENGINE",
                     regime_tags=regime_tags,
                     extra=extra,
                 )
-
-                print(f"[SIGNAL] {symbol} {tf_label} {side} | signal_id={signal_id} | reason={reason}")
+                print(
+                    f"[SIGNAL] {symbol} {tf_label} {side} | "
+                    f"strategy=GENERIC | signal_id={signal_id} | reason={reason}"
+                )
 
         # Heartbeat
         now = time.time()
         if now >= next_heartbeat:
             uptime_min = int((now - start_ts) / 60)
             hb = (
-                f"🩺 Signal Engine heartbeat (v1)\n"
+                f"🩺 Signal Engine heartbeat (v2)\n"
                 f"- Uptime: {uptime_min} min\n"
-                f"- Symbols: {', '.join(SIG_SYMBOLS)}\n"
-                f"- TFs: {', '.join(tf_display(t) for t in SIG_TIMEFRAMES)}\n"
-                f"- Last loop signals: {total_signals_this_loop}"
+                f"- Symbols: {', '.join(all_symbols)}\n"
+                f"- TFs: {', '.join(tf_display(t) for t in all_tfs)}\n"
+                f"- Last loop signals: {total_signals_this_loop}\n"
+                f"- Using strategies: {SIG_USE_STRATEGIES and _HAS_STRATEGY_CONFIG}"
             )
             tg_info(hb)
             next_heartbeat = now + SIG_HEARTBEAT_SEC
