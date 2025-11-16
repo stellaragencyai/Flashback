@@ -10,9 +10,11 @@
 #   - sub_uid must match your Bybit MemberId UIDs in .env
 #   - name is a human label (used in dashboards/logs)
 #   - role is a high-level description only (free text for now)
-#   - risk_per_trade_pct is % of MAIN equity per trade (for now)
+#   - risk_per_trade_pct is % of equity per trade (for now)
 #   - max_concurrent_positions is per-symbol cap for v1 executor
 #   - ai_profile is the model/profile name used by setup_memory + AI gate
+#   - timeframes is the list of chart intervals this strategy listens to
+#   - automation_mode: OFF | PAPER | LIVE
 
 version: 1
 notes: |
@@ -28,10 +30,14 @@ subaccounts:
     name: Sub1_Trend
     role: trend_follow
     enabled: true
+    automation_mode: PAPER        # later: LIVE
     symbols:
       - BTCUSDT
       - ETHUSDT
       - SOLUSDT
+    timeframes:
+      - "15"      # 15m
+      - "60"      # 1h
     risk_per_trade_pct: 0.25      # 0.25% of equity per trade
     max_concurrent_positions: 1   # 1 position per symbol at a time
     ai_profile: trend_v1
@@ -47,11 +53,15 @@ subaccounts:
     name: Sub2_Breakout
     role: breakout_momentum
     enabled: true
+    automation_mode: PAPER
     symbols:
       - BTCUSDT
       - ETHUSDT
       - PUMPFUNUSDT
       - FARTCOINUSDT
+    timeframes:
+      - "5"       # 5m
+      - "15"      # 15m
     risk_per_trade_pct: 0.30
     max_concurrent_positions: 1
     ai_profile: breakout_v1
@@ -67,10 +77,15 @@ subaccounts:
     name: Sub3_ScalpMajors
     role: scalp_intraday
     enabled: true
+    automation_mode: PAPER
     symbols:
       - BTCUSDT
       - ETHUSDT
       - SOLUSDT
+    timeframes:
+      - "1"       # 1m
+      - "3"       # 3m
+      - "5"       # 5m
     risk_per_trade_pct: 0.20
     max_concurrent_positions: 2
     ai_profile: scalp_v1
@@ -85,11 +100,16 @@ subaccounts:
     name: Sub4_SwingRevert
     role: swing_reversion
     enabled: true
+    automation_mode: PAPER
     symbols:
       - BTCUSDT
       - ETHUSDT
       - XRPUSDT
       - ADAUSDT
+    timeframes:
+      - "15"      # 15m
+      - "60"      # 1h
+      - "240"     # 4h
     risk_per_trade_pct: 0.25
     max_concurrent_positions: 2
     ai_profile: reversion_v1
@@ -104,11 +124,15 @@ subaccounts:
     name: Sub5_AltTrend
     role: alt_trend
     enabled: true
+    automation_mode: PAPER
     symbols:
       - SOLUSDT
       - LINKUSDT
       - INJUSDT
       - OPUSDT
+    timeframes:
+      - "15"      # 15m
+      - "60"      # 1h
     risk_per_trade_pct: 0.30
     max_concurrent_positions: 2
     ai_profile: alt_trend_v1
@@ -123,9 +147,13 @@ subaccounts:
     name: Sub6_Speculative
     role: microcap_spec
     enabled: true
+    automation_mode: PAPER
     symbols:
       - FARTCOINUSDT
       - PUMPFUNUSDT
+    timeframes:
+      - "1"       # 1m
+      - "5"       # 5m
     risk_per_trade_pct: 0.20     # smaller size, but wild pairs
     max_concurrent_positions: 1
     ai_profile: spec_v1
@@ -140,10 +168,14 @@ subaccounts:
     name: Sub7_Canary
     role: canary_experimental
     enabled: true
+    automation_mode: PAPER
     symbols:
       - BTCUSDT
       - ETHUSDT
-      - one_random_alt   # placeholder; can refine later
+      - SOLUSDT    # swapped placeholder for real alt
+    timeframes:
+      - "5"       # 5m
+      - "15"      # 15m
     risk_per_trade_pct: 0.10
     max_concurrent_positions: 1
     ai_profile: canary_v1
@@ -158,12 +190,16 @@ subaccounts:
     name: Sub8_SwingMulti
     role: swing_multi
     enabled: true
+    automation_mode: PAPER
     symbols:
       - BTCUSDT
       - ETHUSDT
       - SOLUSDT
       - LINKUSDT
       - INJUSDT
+    timeframes:
+      - "60"      # 1h
+      - "240"     # 4h
     risk_per_trade_pct: 0.25
     max_concurrent_positions: 3
     ai_profile: swing_v1
@@ -178,10 +214,14 @@ subaccounts:
     name: Sub9_Range
     role: range_intraday
     enabled: true
+    automation_mode: PAPER
     symbols:
       - BTCUSDT
       - ETHUSDT
       - XRPUSDT
+    timeframes:
+      - "5"       # 5m
+      - "15"      # 15m
     risk_per_trade_pct: 0.20
     max_concurrent_positions: 2
     ai_profile: range_v1
@@ -196,12 +236,16 @@ subaccounts:
     name: Sub10_ManualOnly
     role: manual_discretionary
     enabled: false               # important: no auto-trading expected
+    automation_mode: OFF
     symbols:
       - BTCUSDT
       - ETHUSDT
       - SOLUSDT
       - FARTCOINUSDT
       - PUMPFUNUSDT
+    timeframes:
+      - "5"       # 5m
+      - "15"      # 15m
     risk_per_trade_pct: 0.00
     max_concurrent_positions: 0
     ai_profile: manual_only

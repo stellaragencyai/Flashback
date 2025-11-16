@@ -4,13 +4,14 @@
 Flashback / Base44 — Signal Engine v2 (Strategy-aware + AI-logging)
 
 What this does:
-- If SIG_USE_STRATEGIES=true (default) and app.core.strategy_config is available:
-    • Builds a universe from StrategyProfile definitions:
-        (symbol, timeframe) -> list of StrategyProfile(s)
-    • Only scans symbols/TFs belonging to at least one active strategy.
-    • Emits signals tagged with strategy_id + sub_uid for each matched strategy.
+- If SIG_USE_STRATEGIES=true (default) and app.core.strategies is available:
+    • Reads config/strategies.yaml via app.core.strategies.
+    • Builds a universe:
+          (symbol, timeframe) -> list of strategy dicts (per subaccount).
+    • Only scans symbols/TFs belonging to at least one sub-strategy.
+    • Emits signals tagged with strategy name + sub_uid for each matched strategy.
 - Otherwise (fallback mode):
-    • Uses SIG_SYMBOLS / SIG_TIMEFRAMES from .env like v1, generic signals.
+    • Uses SIG_SYMBOLS / SIG_TIMEFRAMES from .env (like v1, generic).
 
 Shared behavior:
 - Uses Bybit public kline endpoint to fetch recent candles.
@@ -31,14 +32,13 @@ Shared behavior:
     SIG_TIMEFRAMES            = 5,15                   # fallback-only
     SIG_POLL_SEC              = 15
     SIG_HEARTBEAT_SEC         = 300
-    SIG_USE_STRATEGIES        = true          # use app.core.strategy_config universe
+    SIG_USE_STRATEGIES        = true          # use app.core.strategies universe
 
 Telegram:
     Uses app.core.notifier_bot.get_notifier("main")
 
 Run from project root:
     python -m app.bots.signal_engine
-
 """
 
 from __future__ import annotations
@@ -66,14 +66,13 @@ from app.core.ai_hooks import log_signal_from_engine
 # Telegram notifier (same pattern as supervisor)
 from app.core.notifier_bot import get_notifier
 
-# Optional strategy config
+# Strategy registry (your YAML-backed file)
 try:
-    from app.core.strategy_config import StrategyProfile, STRATEGIES
-    _HAS_STRATEGY_CONFIG = True
+    from app.core import strategies as stratreg
+    _HAS_STRATEGY_REGISTRY = True
 except Exception:
-    StrategyProfile = None  # type: ignore
-    STRATEGIES = {}         # type: ignore
-    _HAS_STRATEGY_CONFIG = False
+    stratreg = None  # type: ignore
+    _HAS_STRATEGY_REGISTRY = False
 
 
 # ---------- Paths & Env ----------
@@ -269,33 +268,52 @@ def tf_display(tf: str) -> str:
 
 # ---------- Strategy-aware universe ----------
 
-def build_universe() -> Dict[Tuple[str, str], List[StrategyProfile]]:
+def build_universe() -> Dict[Tuple[str, str], List[Dict[str, Any]]]:
     """
     Build mapping:
-        (symbol, timeframe_raw) -> [StrategyProfile, ...]
-    When SIG_USE_STRATEGIES is enabled and STRATEGIES are available,
-    we use StrategyProfile.symbols / .timeframes.
-    Otherwise, we fall back to SIG_SYMBOLS / SIG_TIMEFRAMES with no strategies.
+        (symbol, timeframe_raw) -> [strategy_dict, ...]
+    When SIG_USE_STRATEGIES is enabled and strategies.yaml is available,
+    we use subaccount strategy definitions.
+    Otherwise, fall back to SIG_SYMBOLS / SIG_TIMEFRAMES with no strategies.
     """
-    universe: Dict[Tuple[str, str], List[StrategyProfile]] = {}
+    universe: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
 
-    if SIG_USE_STRATEGIES and _HAS_STRATEGY_CONFIG and STRATEGIES:
-        # Only consider strategies that are at least PAPER/LIVE (automation_mode != "OFF")
-        for s in STRATEGIES.values():
-            # type: ignore[attr-defined] for StrategyProfile fields
-            symbols = getattr(s, "symbols", None) or []
-            tfs = getattr(s, "timeframes", None) or []
+    if SIG_USE_STRATEGIES and _HAS_STRATEGY_REGISTRY:
+        try:
+            sub_strats = stratreg.all_sub_strategies()
+        except Exception as e:
+            print(f"[signal_engine] Failed to load strategy config: {e}")
+            sub_strats = []
+
+        for s in sub_strats:
+            sub_uid = str(s.get("sub_uid", "")).strip()
+            if not sub_uid:
+                continue
+
+            name = str(s.get("name", f"sub-{sub_uid}"))
+            symbols = s.get("symbols") or []
+            tfs = s.get("timeframes") or []
+
             if not symbols or not tfs:
                 continue
 
-            # If strategy is completely OFF, we still may want signals for learning,
-            # so we do NOT filter by automation_mode here. You can change this
-            # later if you want only PAPER/LIVE.
+            # You *could* filter on automation_mode here (“LIVE”/“PAPER” only),
+            # but for now we still want signals for OFF strategies for learning.
             for sym in symbols:
-                sym_u = sym.upper()
+                sym_u = str(sym).upper()
                 for tf in tfs:
-                    key = (sym_u, tf)
-                    universe.setdefault(key, []).append(s)
+                    tf_str = str(tf).strip()
+                    key = (sym_u, tf_str)
+                    # Store a normalized view of the strategy we need here
+                    entry = {
+                        "sub_uid": sub_uid,
+                        "name": name,
+                        "symbols": symbols,
+                        "timeframes": tfs,
+                        "automation_mode": s.get("automation_mode"),
+                        "raw": s,
+                    }
+                    universe.setdefault(key, []).append(entry)
 
     # Fallback if no strategies or disabled
     if not universe:
@@ -319,7 +337,7 @@ def main() -> None:
     print(f"Bybit base:   {BYBIT_BASE}")
     print(f"SIG_ENABLED:  {SIG_ENABLED}")
     print(f"SIG_DRY_RUN:  {SIG_DRY_RUN}")
-    print(f"SIG_USE_STRATEGIES: {SIG_USE_STRATEGIES} (has_config={_HAS_STRATEGY_CONFIG})")
+    print(f"SIG_USE_STRATEGIES: {SIG_USE_STRATEGIES} (has_registry={_HAS_STRATEGY_REGISTRY})")
     print(f"Universe symbols:    {all_symbols}")
     print(f"Universe timeframes: {all_tfs}")
     print(f"Poll every:          {SIG_POLL_SEC} sec")
@@ -337,13 +355,16 @@ def main() -> None:
         tg_info(msg)
         return
 
-    if SIG_USE_STRATEGIES and _HAS_STRATEGY_CONFIG and STRATEGIES:
-        strat_ids = ", ".join(sorted(STRATEGIES.keys()))
+    if SIG_USE_STRATEGIES and _HAS_STRATEGY_REGISTRY:
+        try:
+            strat_names = [s.get("name", f"sub-{s.get('sub_uid')}") for s in stratreg.all_sub_strategies()]
+        except Exception:
+            strat_names = []
         tg_info(
             "🚀 Signal Engine v2 started (strategy-aware).\n"
             f"Symbols: {', '.join(all_symbols)}\n"
             f"TFs: {', '.join(tf_display(t) for t in all_tfs)}\n"
-            f"Strategies: {strat_ids}\n"
+            f"Strategies: {', '.join(strat_names) or 'n/a'}\n"
             f"Poll: {SIG_POLL_SEC}s | Heartbeat: {SIG_HEARTBEAT_SEC}s"
         )
     else:
@@ -364,7 +385,7 @@ def main() -> None:
         loop_start = time.time()
         total_signals_this_loop = 0
 
-        # cache candles per (symbol, tf) per loop
+        # cache candles per (symbol, tf) per loop (if we ever need reuse)
         candles_cache: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
 
         for (symbol, tf), strat_list in universe.items():
@@ -405,16 +426,14 @@ def main() -> None:
             last_c = debug.get("last_close")
             ma = debug.get("ma")
 
-            # Determine which strategies this signal applies to
-            # strat_list may be empty in fallback mode.
-            applicable_strats: List[StrategyProfile] = strat_list or []
+            applicable_strats: List[Dict[str, Any]] = strat_list or []
 
             if applicable_strats:
-                strat_ids = ", ".join(s.id for s in applicable_strats)  # type: ignore[attr-defined]
+                strat_names = ", ".join(s.get("name", f"sub-{s.get('sub_uid')}") for s in applicable_strats)
                 msg = (
                     f"📡 *Signal Engine v2* — {symbol} / {tf_label}\n"
                     f"Side: *{side}*\n"
-                    f"Strategies: `{strat_ids}`\n"
+                    f"Strategies: `{strat_names}`\n"
                     f"Last close: `{last_c}` | MA({len([c['close'] for c in candles[-MA_LOOKBACK:]])}): `{ma}`\n"
                     f"Reason: `{reason}`\n"
                     f"(No orders placed yet, logging only.)"
@@ -439,16 +458,27 @@ def main() -> None:
             }
 
             if applicable_strats:
-                for strat in applicable_strats:
-                    # type: ignore[attr-defined] for dataclass fields
+                for s in applicable_strats:
+                    sub_uid = str(s.get("sub_uid"))
+                    strat_name = s.get("name", f"sub-{sub_uid}")
+                    automation_mode = s.get("automation_mode")
+                    # Optional human-readable label
+                    try:
+                        sub_label = stratreg.get_sub_label(sub_uid) if _HAS_STRATEGY_REGISTRY else None
+                    except Exception:
+                        sub_label = None
+
                     extra = dict(base_extra)
                     extra.update(
                         {
-                            "strategy_id": strat.id,
-                            "strategy_name": strat.name,
-                            "strategy_automation_mode": getattr(strat, "automation_mode", None),
+                            "strategy_name": strat_name,
+                            "strategy_automation_mode": automation_mode,
+                            "sub_uid": sub_uid,
+                            "sub_label": sub_label,
+                            "strategy_raw": s.get("raw") or s,
                         }
                     )
+
                     signal_id = log_signal_from_engine(
                         symbol=symbol,
                         timeframe=tf_label,
@@ -457,19 +487,19 @@ def main() -> None:
                         confidence=None,
                         stop_hint=None,
                         owner="AUTO_STRATEGY",
-                        sub_uid=getattr(strat, "preferred_sub_uid", None),
-                        strategy_role=strat.id,
+                        sub_uid=sub_uid,
+                        strategy_role=strat_name,
                         regime_tags=regime_tags,
                         extra=extra,
                     )
                     print(
                         f"[SIGNAL] {symbol} {tf_label} {side} | "
-                        f"strategy={strat.id} | signal_id={signal_id} | reason={reason}"
+                        f"strategy={strat_name} sub_uid={sub_uid} | signal_id={signal_id} | reason={reason}"
                     )
             else:
                 # Fallback: generic signal, no specific strategy
                 extra = dict(base_extra)
-                extra.update({"strategy_id": None, "strategy_name": None})
+                extra.update({"strategy_name": None, "strategy_automation_mode": None})
                 signal_id = log_signal_from_engine(
                     symbol=symbol,
                     timeframe=tf_label,
@@ -498,7 +528,7 @@ def main() -> None:
                 f"- Symbols: {', '.join(all_symbols)}\n"
                 f"- TFs: {', '.join(tf_display(t) for t in all_tfs)}\n"
                 f"- Last loop signals: {total_signals_this_loop}\n"
-                f"- Using strategies: {SIG_USE_STRATEGIES and _HAS_STRATEGY_CONFIG}"
+                f"- Using strategies: {SIG_USE_STRATEGIES and _HAS_STRATEGY_REGISTRY}"
             )
             tg_info(hb)
             next_heartbeat = now + SIG_HEARTBEAT_SEC
