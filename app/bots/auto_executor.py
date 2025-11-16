@@ -1,55 +1,67 @@
-# app/bots/auto_executor.py
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Flashback — Auto Executor v1
+Flashback — Auto Executor v2 (Strategy-aware, multi-sub, AI-gated)
 
-Purpose:
-    - Consume signals from an append-only JSONL file (signals/observed.jsonl).
-    - For a given logical subaccount (EXEC_SUB_UID), as defined in strategies.yaml:
-        • Filter signals by allowed symbols and basic strategy constraints.
-        • Run them through the AI gate (ai_gate_decide).
-        • If allowed, size and place entry orders on Bybit (MAIN unified account).
-    - Let TP/SL Manager handle exits via ladders and trading-stop.
+Purpose
+-------
+- Consume signals from an append-only JSONL file (signals/observed.jsonl).
+- For EACH strategy defined in config/strategies.yaml:
+    • Decide if that strategy should care about the signal
+      (symbol + timeframe match via strategy_gate).
+    • Check `enabled` and `automation_mode` (OFF / PAPER / LIVE).
+    • Run the candidate through the AI gate (ai_gate_decide).
+    • If allowed, size and place entry orders on Bybit (MAIN unified account).
+- Let TP/SL Manager handle exits via ladders / stop logic.
 
-Notes / Assumptions:
-    - This v1 executes on the MAIN account using BYBIT_MAIN_* keys from .env.
-      EXEC_SUB_UID is treated as the "logical owner" of the strategy for AI and logging.
-      Later, we can extend this to use per-sub API keys to truly trade subaccounts.
-    - Signals are emitted by your Signal Engine into JSONL format; expected fields:
-        {
-            "symbol": "BTCUSDT",
-            "side": "Buy",          # or "Sell"
-            "reason": "trend_breakout",
-            "ts_ms": 1731712345678,
-            "est_rr": 0.25,         # optional, for AI gate
-            "stop_price": 62000.0,  # optional, for sizing
-            "entry_hint": "market"  # optional: "market" or "limit"
-        }
-      Extra fields are ignored.
+Key ideas
+---------
+- Strategies are defined in config/strategies.yaml and accessed via:
+      app.core.strategy_gate
+- This executor is *global*: one process can drive multiple strategies/sub_uids.
+- Execution happens on MAIN account for now (unified / linear perps).
+  Strategies are "logical" owners (sub_uid) used for AI + logging.
 
-Env (.env):
-    EXEC_SUB_UID=524630315                  # which logical sub this executor represents
-    EXEC_DRY_RUN=true|false                 # if true, logs instead of placing real orders
+Signals (JSONL) expected shape (minimal):
+    {
+        "symbol": "BTCUSDT",
+        "side": "Buy",            # or "Sell"
+        "timeframe": "5m",        # optional but recommended
+        "reason": "trend_breakout",
+        "ts_ms": 1731712345678,
+        "est_rr": 0.25,           # optional, for AI gate
+        "stop_price": 62000.0,    # optional, for future sizing
+        "entry_hint": "market"    # optional: "market" or "limit"
+    }
+
+Anything extra is ignored.
+
+.env
+----
+    EXEC_ENABLED=true|false          # master on/off (default true)
+    EXEC_DRY_RUN=true|false          # if true, NEVER send live orders
     EXEC_SIGNALS_PATH=signals/observed.jsonl
     EXEC_POLL_SECONDS=2
-    EXEC_DEFAULT_RISK_PCT=0.25              # fallback if strategy has no risk_per_trade_pct
+    EXEC_DEFAULT_RISK_PCT=0.25       # fallback if strategy has no risk_per_trade_pct
+    EXEC_SUB_FILTER=524630315,524633243  # optional list of sub_uids to act for
 
-Dependencies:
+Dependencies
+------------
     - app.core.flashback_common:
         bybit_post, get_equity_usdt, list_open_positions, last_price
-    - app.core.strategies:
-        get_strategy_for_sub
+    - app.core.strategy_gate:
+        get_strategies_for_signal, all_strategies,
+        is_strategy_enabled, is_strategy_off, is_strategy_live, is_strategy_paper,
+        strategy_risk_pct, strategy_max_concurrent, strategy_label
     - app.ai.executor_ai_gate:
         ai_gate_decide
     - app.core.notifier_bot:
         get_notifier("main")
 
-State:
-    - state/auto_executor_<sub_uid>.json:
-        {
-            "last_offset": <int>   # byte offset in signals file; used to resume
-        }
+State
+-----
+    - state/auto_executor.json:
+        { "last_offset": <int> }  # byte offset in signals file; used to resume
 """
 
 from __future__ import annotations
@@ -60,9 +72,8 @@ import time
 from datetime import datetime
 from decimal import Decimal, ROUND_DOWN
 from pathlib import Path
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, Optional, List, Tuple
 
-# --- Core imports from your stack ---
 from app.core.flashback_common import (
     bybit_post,
     get_equity_usdt,
@@ -70,7 +81,18 @@ from app.core.flashback_common import (
     last_price,
 )
 
-from app.core.strategies import get_strategy_for_sub
+from app.core.strategy_gate import (
+    get_strategies_for_signal,
+    all_strategies,
+    is_strategy_enabled,
+    is_strategy_off,
+    is_strategy_live,
+    is_strategy_paper,
+    strategy_risk_pct,
+    strategy_max_concurrent,
+    strategy_label,
+)
+
 from app.ai.executor_ai_gate import ai_gate_decide
 from app.core.notifier_bot import get_notifier
 
@@ -78,21 +100,25 @@ from app.core.notifier_bot import get_notifier
 
 ROOT = Path(__file__).resolve().parents[2]
 
-EXEC_SUB_UID: Optional[str] = os.getenv("EXEC_SUB_UID", "").strip() or None
-if EXEC_SUB_UID is None:
-    raise RuntimeError("EXEC_SUB_UID is not set in .env; executor doesn't know which sub it's running for.")
-
+EXEC_ENABLED = str(os.getenv("EXEC_ENABLED", "true")).strip().lower() in ("1", "true", "yes", "on")
 EXEC_DRY_RUN = str(os.getenv("EXEC_DRY_RUN", "true")).strip().lower() in ("1", "true", "yes", "on")
 EXEC_SIGNALS_PATH = Path(os.getenv("EXEC_SIGNALS_PATH", "signals/observed.jsonl"))
 EXEC_POLL_SECONDS = int(os.getenv("EXEC_POLL_SECONDS", "2"))
 EXEC_DEFAULT_RISK_PCT = Decimal(os.getenv("EXEC_DEFAULT_RISK_PCT", "0.25"))
+
+# Optional: restrict executor to only some sub_uids (comma-separated)
+_raw_filter = os.getenv("EXEC_SUB_FILTER", "").strip()
+if _raw_filter:
+    EXEC_SUB_FILTER: Optional[List[str]] = [s.strip() for s in _raw_filter.split(",") if s.strip()]
+else:
+    EXEC_SUB_FILTER = None
 
 CATEGORY = "linear"
 QUOTE = "USDT"
 
 STATE_DIR = ROOT / "state"
 STATE_DIR.mkdir(parents=True, exist_ok=True)
-STATE_PATH = STATE_DIR / f"auto_executor_{EXEC_SUB_UID}.json"
+STATE_PATH = STATE_DIR / "auto_executor.json"
 
 tg = get_notifier("main")
 
@@ -100,17 +126,14 @@ tg = get_notifier("main")
 # ---------- Console + Telegram logging wrappers ---------- #
 
 def log_info(msg: str) -> None:
-    """Print to console and attempt Telegram info."""
     print(msg, flush=True)
     try:
         tg.info(msg)
     except Exception:
-        # If Telegram isn't configured or fails, we still have console output.
         pass
 
 
 def log_warn(msg: str) -> None:
-    """Print to console and attempt Telegram warn."""
     print(msg, flush=True)
     try:
         tg.warn(msg)
@@ -119,7 +142,6 @@ def log_warn(msg: str) -> None:
 
 
 def log_error(msg: str) -> None:
-    """Print to console and attempt Telegram error."""
     print(msg, flush=True)
     try:
         tg.error(msg)
@@ -139,20 +161,15 @@ def _load_state() -> Dict[str, Any]:
 
 
 def _save_state(st: Dict[str, Any]) -> None:
-    STATE_PATH.write_text(json.dumps(st, separators=(",", ":"), ensure_ascii=False), encoding="utf-8")
+    STATE_PATH.write_text(
+        json.dumps(st, separators=(",", ":"), ensure_ascii=False),
+        encoding="utf-8",
+    )
 
 
-# ---------- Helpers ---------- #
+# ---------- File reading ---------- #
 
-def _fmt_dec(x: Decimal) -> str:
-    return f"{x.quantize(Decimal('0.0000'), rounding=ROUND_DOWN)}"
-
-
-def _fmt_usd(x: Decimal) -> str:
-    return f"${x.quantize(Decimal('0.01'), rounding=ROUND_DOWN)}"
-
-
-def _read_new_signals(signals_path: Path, last_offset: int) -> tuple[List[Dict[str, Any]], int]:
+def _read_new_signals(signals_path: Path, last_offset: int) -> Tuple[List[Dict[str, Any]], int]:
     """
     Read any new JSONL signals added after last_offset.
     Returns (signals, new_offset).
@@ -162,11 +179,9 @@ def _read_new_signals(signals_path: Path, last_offset: int) -> tuple[List[Dict[s
 
     signals: List[Dict[str, Any]] = []
     with signals_path.open("r", encoding="utf-8") as f:
-        # Seek to last read position
         try:
             f.seek(last_offset)
         except Exception:
-            # If file shrank or something weird, reset to 0
             f.seek(0)
             last_offset = 0
 
@@ -179,7 +194,6 @@ def _read_new_signals(signals_path: Path, last_offset: int) -> tuple[List[Dict[s
                 if isinstance(sig, dict):
                     signals.append(sig)
             except Exception:
-                # malformed line; skip
                 continue
 
         new_offset = f.tell()
@@ -187,50 +201,43 @@ def _read_new_signals(signals_path: Path, last_offset: int) -> tuple[List[Dict[s
     return signals, new_offset
 
 
+# ---------- Helpers ---------- #
+
+def _fmt_dec(x: Decimal) -> str:
+    return f"{x.quantize(Decimal('0.0000'), rounding=ROUND_DOWN)}"
+
+
+def _fmt_usd(x: Decimal) -> str:
+    return f"${x.quantize(Decimal('0.01'), rounding=ROUND_DOWN)}"
+
+
 def _get_open_positions_for_symbol(symbol: str) -> List[Dict[str, Any]]:
     """
     Fetch open positions and filter for the given symbol.
-    Currently, this uses MAIN-level positions (no per-sub split yet).
+    Currently, this uses MAIN-level positions only (no per-sub split yet).
     """
     try:
         pos = list_open_positions()
     except Exception:
         return []
-    return [p for p in pos if p.get("symbol") == symbol and Decimal(str(p.get("size", "0"))) > 0]
+    return [
+        p for p in pos
+        if p.get("symbol") == symbol and Decimal(str(p.get("size", "0"))) > 0
+    ]
 
 
-def _max_concurrent_open_for_sub(strategy_cfg: Dict[str, Any]) -> int:
-    try:
-        return int(strategy_cfg.get("max_concurrent_positions", 1))
-    except Exception:
-        return 1
-
-
-def _allowed_symbols(strategy_cfg: Dict[str, Any]) -> List[str]:
-    syms = strategy_cfg.get("symbols", [])
-    if not isinstance(syms, list):
-        return []
-    return [str(s).strip() for s in syms if str(s).strip()]
-
-
-def _risk_pct_for_sub(strategy_cfg: Dict[str, Any]) -> Decimal:
-    try:
-        rp = Decimal(str(strategy_cfg.get("risk_per_trade_pct", EXEC_DEFAULT_RISK_PCT)))
-    except Exception:
-        rp = EXEC_DEFAULT_RISK_PCT
-    return rp
-
-
-def _compute_qty(symbol: str,
-                 side: str,
-                 risk_pct: Decimal,
-                 signal: Dict[str, Any]) -> Optional[Decimal]:
+def _compute_qty(
+    symbol: str,
+    risk_pct: Decimal,
+    signal: Dict[str, Any],
+) -> Optional[Decimal]:
     """
     Compute a naive qty:
         - get equity in USDT
         - risk_pct% of equity as notional
         - qty = notional / price
-    We can refine later (true SL-based R, tick/step, etc.)
+
+    Uses latest price or `entry_price`/`price` hint from signal.
     """
     try:
         equity = Decimal(str(get_equity_usdt()))
@@ -244,8 +251,8 @@ def _compute_qty(symbol: str,
     if notional <= 0:
         return None
 
-    # Use latest price (or a hint from signal if available)
     px_hint = signal.get("entry_price") or signal.get("price")
+    price: Optional[Decimal]
     if px_hint is not None:
         try:
             price = Decimal(str(px_hint))
@@ -270,7 +277,7 @@ def _compute_qty(symbol: str,
     return qty
 
 
-def _place_market_order(symbol: str, side: str, qty: Decimal, reason: str) -> bool:
+def _place_market_order(symbol: str, side: str, qty: Decimal, reason: str, strategy_lbl: str) -> bool:
     """
     Place a simple market order on Bybit.
     Uses MAIN unified linear perps, CROSS margin, default leverage.
@@ -281,7 +288,7 @@ def _place_market_order(symbol: str, side: str, qty: Decimal, reason: str) -> bo
 
     if EXEC_DRY_RUN:
         log_info(
-            f"[EXEC][DRY] Would place MARKET order: {symbol} {side} qty={_fmt_dec(qty)} | reason={reason}"
+            f"[EXEC][DRY] {strategy_lbl} → MARKET {symbol} {side} qty={_fmt_dec(qty)} | reason={reason}"
         )
         return True
 
@@ -298,52 +305,93 @@ def _place_market_order(symbol: str, side: str, qty: Decimal, reason: str) -> bo
     try:
         bybit_post("/v5/order/create", body)
         log_info(
-            f"[EXEC] Placed MARKET order: {symbol} {side} qty={_fmt_dec(qty)} | reason={reason}"
+            f"[EXEC] {strategy_lbl} placed MARKET {symbol} {side} qty={_fmt_dec(qty)} | reason={reason}"
         )
         return True
     except Exception as e:
-        log_error(f"[EXEC] Order create failed for {symbol} {side} qty={_fmt_dec(qty)}: {e}")
+        log_error(
+            f"[EXEC] {strategy_lbl} order create failed for {symbol} {side} "
+            f"qty={_fmt_dec(qty)}: {e}"
+        )
         return False
 
 
-# ---------- Core processing ---------- #
+# ---------- Strategy matching ---------- #
 
-def _handle_signal(sig: Dict[str, Any], strategy_cfg: Dict[str, Any]) -> None:
-    symbol = str(sig.get("symbol", "")).strip()
-    side = sig.get("side") or sig.get("direction")  # sometimes "direction" is used
-    if not symbol or side not in ("Buy", "Sell"):
+def _matching_strategies_for_signal(symbol: str, timeframe: Optional[str]) -> List[Dict[str, Any]]:
+    """
+    Decide which strategies should consider this signal.
+
+    If timeframe is provided, use strategy_gate.get_strategies_for_signal()
+    (symbol + timeframe must both match).
+
+    If timeframe is missing, fall back to "any strategy that trades this symbol".
+    """
+    if timeframe:
+        return get_strategies_for_signal(symbol, timeframe)
+
+    # Fallback: filter by symbol only
+    sym_u = symbol.upper().strip()
+    matches: List[Dict[str, Any]] = []
+    for s in all_strategies():
+        if sym_u in s.get("symbols_norm", []):
+            matches.append(s)
+    return matches
+
+
+def _sub_filter_allows(sub_uid: str) -> bool:
+    if EXEC_SUB_FILTER is None:
+        return True
+    return str(sub_uid) in EXEC_SUB_FILTER
+
+
+# ---------- Core per-signal processing ---------- #
+
+def _handle_signal_for_strategy(sig: Dict[str, Any], strat: Dict[str, Any]) -> None:
+    symbol = str(sig.get("symbol", "")).strip().upper()
+    if not symbol:
         return
 
-    # Optional: signal-level routing; if signal declares a target sub_uid and it isn't ours, skip
-    target_sub = sig.get("sub_uid") or sig.get("sub") or None
-    if target_sub is not None and str(target_sub) != EXEC_SUB_UID:
+    # Side normalization
+    side = sig.get("side") or sig.get("direction")
+    if side not in ("Buy", "Sell"):
         return
 
-    allowed_syms = _allowed_symbols(strategy_cfg)
-    if allowed_syms and symbol not in allowed_syms:
-        log_info(
-            f"[EXEC] Skip {symbol}: not in allowed symbols for sub {EXEC_SUB_UID} ({allowed_syms})."
-        )
+    sub_uid = str(strat.get("sub_uid_str") or strat.get("sub_uid") or "").strip()
+    if not sub_uid:
         return
 
-    # Enforce max concurrent positions (rough main-level count for now)
-    max_conc = _max_concurrent_open_for_sub(strategy_cfg)
+    if not _sub_filter_allows(sub_uid):
+        # This strategy is not in EXEC_SUB_FILTER, ignore
+        return
+
+    # Strategy must be enabled and not OFF
+    if not is_strategy_enabled(strat):
+        return
+    if is_strategy_off(strat):
+        log_info(f"[EXEC] {strategy_label(strat)} is OFF; ignoring signal for {symbol}.")
+        return
+
+    # strategy_max_concurrent: rough interpretation for now
+    max_conc = strategy_max_concurrent(strat)
     open_pos = _get_open_positions_for_symbol(symbol)
-    if open_pos and max_conc <= 0:
+    if max_conc <= 0 and open_pos:
         log_info(
-            f"[EXEC] Skip {symbol}: max_concurrent_positions=0 but there is already an open position."
+            f"[EXEC] {strategy_label(strat)} has max_concurrent_positions=0 "
+            f"and there is already an open {symbol} position; skipping."
         )
         return
 
-    # For now, we don't track per-sub open count; we just prevent multiple entries
-    # on the same symbol concurrently.
+    # For now, we disallow multiple open positions on the same symbol across ALL strategies.
+    # Later we can tag positions by owner and refine this.
     if open_pos:
         log_info(
-            f"[EXEC] Skip {symbol}: already have open position on this symbol."
+            f"[EXEC] Global skip for {symbol}: there is already an open position; "
+            f"{strategy_label(strat)} will not add another."
         )
         return
 
-    # Build features for AI gate
+    # --- AI gate -------------------
     now = datetime.utcnow()
     hour = now.hour
 
@@ -354,61 +402,102 @@ def _handle_signal(sig: Dict[str, Any], strategy_cfg: Dict[str, Any]) -> None:
         est_rr_val = 0.2
 
     features = {
-        "sub_trade_count": int(sig.get("sub_trade_count", 0)),  # TODO: wire to DB later
+        "sub_trade_count": int(sig.get("sub_trade_count", 0)),  # TODO: wire from DB later
         "est_rr": est_rr_val,
         "hour_of_day": hour,
     }
 
-    ai_profile = strategy_cfg.get("ai_profile", "legacy_v1")
+    ai_profile = strat.get("ai_profile", "legacy_v1")
 
-    allowed, score, reason = ai_gate_decide(
-        sub_uid=EXEC_SUB_UID,
+    allowed, score, reason_ai = ai_gate_decide(
+        sub_uid=sub_uid,
         strategy_id=str(ai_profile),
         features=features,
     )
 
+    lbl = strategy_label(strat)
+
     if not allowed:
         log_info(
-            f"[EXEC][AI_BLOCK] sub={EXEC_SUB_UID} symbol={symbol} side={side} "
-            f"score={score:.2f} reason={reason}"
+            f"[EXEC][AI_BLOCK] {lbl} symbol={symbol} side={side} "
+            f"score={score:.2f} reason={reason_ai}"
         )
         return
 
     log_info(
-        f"[EXEC][AI_OK] sub={EXEC_SUB_UID} symbol={symbol} side={side} "
-        f"score={score:.2f} reason={reason}"
+        f"[EXEC][AI_OK] {lbl} symbol={symbol} side={side} "
+        f"score={score:.2f} reason={reason_ai}"
     )
 
-    # Compute size
-    risk_pct = _risk_pct_for_sub(strategy_cfg)
-    qty = _compute_qty(symbol, side, risk_pct, sig)
-    if qty is None or qty <= 0:
-        log_warn(
-            f"[EXEC] Unable to compute position size for {symbol} with risk_pct={risk_pct}."
-        )
+    # --- Risk & sizing -------------
+    rpct = Decimal(str(strategy_risk_pct(strat) or EXEC_DEFAULT_RISK_PCT))
+    if rpct <= 0:
+        log_info(f"[EXEC] {lbl} has 0 risk_per_trade_pct; skipping {symbol}.")
         return
 
-    # Place order
+    qty = _compute_qty(symbol, rpct, sig)
+    if qty is None or qty <= 0:
+        log_warn(f"[EXEC] {lbl} unable to compute size for {symbol} with risk_pct={rpct}.")
+        return
+
+    # --- Mode handling: PAPER vs LIVE ------------
+    # Global EXEC_DRY_RUN overrides everything: if true, NOTHING is live.
+    mode_str = "LIVE"
+    if EXEC_DRY_RUN or is_strategy_paper(strat):
+        mode_str = "PAPER"
+
     reason_str = str(sig.get("reason", "signal")).strip() or "signal"
-    _place_market_order(symbol, side, qty, reason_str)
-
-
-def loop() -> None:
-    """
-    Main loop:
-        - Load strategy config for EXEC_SUB_UID.
-        - Watch signals file for new lines.
-        - Process each new signal through strategy + AI gate + order placement.
-    """
-    strategy_cfg = get_strategy_for_sub(EXEC_SUB_UID)
-    if not strategy_cfg:
-        raise RuntimeError(f"No strategy config found for EXEC_SUB_UID={EXEC_SUB_UID}")
 
     log_info(
-        f"🔧 Flashback Auto Executor started for sub_uid={EXEC_SUB_UID} "
-        f"(role={strategy_cfg.get('role')}, DRY_RUN={EXEC_DRY_RUN}).\n"
+        f"[EXEC] {lbl} mode={mode_str} symbol={symbol} side={side} "
+        f"risk={rpct}% qty={_fmt_dec(qty)} reason={reason_str}"
+    )
+
+    if mode_str == "PAPER":
+        # Just log; do not send to Bybit
+        return
+
+    # Actually place order
+    _place_market_order(symbol, side, qty, reason_str, lbl)
+
+
+def _handle_signal(sig: Dict[str, Any]) -> None:
+    symbol = str(sig.get("symbol", "")).strip().upper()
+    if not symbol:
+        return
+
+    timeframe = sig.get("timeframe") or sig.get("tf") or None
+    if isinstance(timeframe, (int, float)):
+        timeframe = str(int(timeframe))
+    elif isinstance(timeframe, str):
+        timeframe = timeframe.strip() or None
+
+    matching_strats = _matching_strategies_for_signal(symbol, timeframe)
+
+    if not matching_strats:
+        # No strategy cares about this symbol/timeframe
+        return
+
+    for strat in matching_strats:
+        try:
+            _handle_signal_for_strategy(sig, strat)
+        except Exception as e:
+            log_error(f"[EXEC] Error while handling signal for {strategy_label(strat)}: {e}")
+
+
+# ---------- Main loop ---------- #
+
+def loop() -> None:
+    if not EXEC_ENABLED:
+        log_info("⚠️ Auto Executor is disabled (EXEC_ENABLED=false). Exiting.")
+        return
+
+    log_info(
+        "🔧 Flashback Auto Executor v2 started.\n"
         f"Signals path: {EXEC_SIGNALS_PATH}\n"
-        f"State file: {STATE_PATH}"
+        f"State file: {STATE_PATH}\n"
+        f"DRY_RUN (global override): {EXEC_DRY_RUN}\n"
+        f"Sub filter: {EXEC_SUB_FILTER if EXEC_SUB_FILTER else 'ALL'}"
     )
 
     st = _load_state()
@@ -419,7 +508,7 @@ def loop() -> None:
             signals, new_offset = _read_new_signals(EXEC_SIGNALS_PATH, last_offset)
             if signals:
                 for sig in signals:
-                    _handle_signal(sig, strategy_cfg)
+                    _handle_signal(sig)
                 last_offset = new_offset
                 st["last_offset"] = last_offset
                 _save_state(st)
