@@ -379,6 +379,8 @@ BOTS: List[str] = [
     "app.bots.breaker_watch",
     "app.bots.tier_enforcer",
     "app.bots.risk_guardian",
+    "app.bots.signal_engine",   # emits signals → signals/observed.jsonl
+    "app.bots.executor",        # consumes signals + logs features
     "app.bots.tp_sl_manager",
     "app.bots.trade_journal",
     "app.bots.volatility_scout",
