@@ -97,6 +97,36 @@ STATE_PATH = STATE_DIR / f"auto_executor_{EXEC_SUB_UID}.json"
 tg = get_notifier("main")
 
 
+# ---------- Console + Telegram logging wrappers ---------- #
+
+def log_info(msg: str) -> None:
+    """Print to console and attempt Telegram info."""
+    print(msg, flush=True)
+    try:
+        tg.info(msg)
+    except Exception:
+        # If Telegram isn't configured or fails, we still have console output.
+        pass
+
+
+def log_warn(msg: str) -> None:
+    """Print to console and attempt Telegram warn."""
+    print(msg, flush=True)
+    try:
+        tg.warn(msg)
+    except Exception:
+        pass
+
+
+def log_error(msg: str) -> None:
+    """Print to console and attempt Telegram error."""
+    print(msg, flush=True)
+    try:
+        tg.error(msg)
+    except Exception:
+        pass
+
+
 # ---------- State helpers ---------- #
 
 def _load_state() -> Dict[str, Any]:
@@ -122,7 +152,7 @@ def _fmt_usd(x: Decimal) -> str:
     return f"${x.quantize(Decimal('0.01'), rounding=ROUND_DOWN)}"
 
 
-def _read_new_signals(signals_path: Path, last_offset: int) -> (List[Dict[str, Any]], int):
+def _read_new_signals(signals_path: Path, last_offset: int) -> tuple[List[Dict[str, Any]], int]:
     """
     Read any new JSONL signals added after last_offset.
     Returns (signals, new_offset).
@@ -246,11 +276,11 @@ def _place_market_order(symbol: str, side: str, qty: Decimal, reason: str) -> bo
     Uses MAIN unified linear perps, CROSS margin, default leverage.
     """
     if qty <= 0:
-        tg.warn(f"[EXEC] Refusing to place zero qty order for {symbol}.")
+        log_warn(f"[EXEC] Refusing to place zero qty order for {symbol}.")
         return False
 
     if EXEC_DRY_RUN:
-        tg.info(
+        log_info(
             f"[EXEC][DRY] Would place MARKET order: {symbol} {side} qty={_fmt_dec(qty)} | reason={reason}"
         )
         return True
@@ -267,12 +297,12 @@ def _place_market_order(symbol: str, side: str, qty: Decimal, reason: str) -> bo
 
     try:
         bybit_post("/v5/order/create", body)
-        tg.info(
+        log_info(
             f"[EXEC] Placed MARKET order: {symbol} {side} qty={_fmt_dec(qty)} | reason={reason}"
         )
         return True
     except Exception as e:
-        tg.error(f"[EXEC] Order create failed for {symbol} {side} qty={_fmt_dec(qty)}: {e}")
+        log_error(f"[EXEC] Order create failed for {symbol} {side} qty={_fmt_dec(qty)}: {e}")
         return False
 
 
@@ -291,7 +321,7 @@ def _handle_signal(sig: Dict[str, Any], strategy_cfg: Dict[str, Any]) -> None:
 
     allowed_syms = _allowed_symbols(strategy_cfg)
     if allowed_syms and symbol not in allowed_syms:
-        tg.info(
+        log_info(
             f"[EXEC] Skip {symbol}: not in allowed symbols for sub {EXEC_SUB_UID} ({allowed_syms})."
         )
         return
@@ -300,7 +330,7 @@ def _handle_signal(sig: Dict[str, Any], strategy_cfg: Dict[str, Any]) -> None:
     max_conc = _max_concurrent_open_for_sub(strategy_cfg)
     open_pos = _get_open_positions_for_symbol(symbol)
     if open_pos and max_conc <= 0:
-        tg.info(
+        log_info(
             f"[EXEC] Skip {symbol}: max_concurrent_positions=0 but there is already an open position."
         )
         return
@@ -308,7 +338,7 @@ def _handle_signal(sig: Dict[str, Any], strategy_cfg: Dict[str, Any]) -> None:
     # For now, we don't track per-sub open count; we just prevent multiple entries
     # on the same symbol concurrently.
     if open_pos:
-        tg.info(
+        log_info(
             f"[EXEC] Skip {symbol}: already have open position on this symbol."
         )
         return
@@ -338,13 +368,13 @@ def _handle_signal(sig: Dict[str, Any], strategy_cfg: Dict[str, Any]) -> None:
     )
 
     if not allowed:
-        tg.info(
+        log_info(
             f"[EXEC][AI_BLOCK] sub={EXEC_SUB_UID} symbol={symbol} side={side} "
             f"score={score:.2f} reason={reason}"
         )
         return
 
-    tg.info(
+    log_info(
         f"[EXEC][AI_OK] sub={EXEC_SUB_UID} symbol={symbol} side={side} "
         f"score={score:.2f} reason={reason}"
     )
@@ -353,7 +383,7 @@ def _handle_signal(sig: Dict[str, Any], strategy_cfg: Dict[str, Any]) -> None:
     risk_pct = _risk_pct_for_sub(strategy_cfg)
     qty = _compute_qty(symbol, side, risk_pct, sig)
     if qty is None or qty <= 0:
-        tg.warn(
+        log_warn(
             f"[EXEC] Unable to compute position size for {symbol} with risk_pct={risk_pct}."
         )
         return
@@ -374,7 +404,7 @@ def loop() -> None:
     if not strategy_cfg:
         raise RuntimeError(f"No strategy config found for EXEC_SUB_UID={EXEC_SUB_UID}")
 
-    tg.info(
+    log_info(
         f"🔧 Flashback Auto Executor started for sub_uid={EXEC_SUB_UID} "
         f"(role={strategy_cfg.get('role')}, DRY_RUN={EXEC_DRY_RUN}).\n"
         f"Signals path: {EXEC_SIGNALS_PATH}\n"
@@ -396,7 +426,7 @@ def loop() -> None:
 
             time.sleep(EXEC_POLL_SECONDS)
         except Exception as e:
-            tg.error(f"[EXEC] Unhandled error in loop: {e}")
+            log_error(f"[EXEC] Unhandled error in loop: {e}")
             time.sleep(5)
 
 
