@@ -2,19 +2,25 @@
 #
 # Flashback — Strategy Registry
 #
-# This file describes the roles, risk, and symbol universe for each
-# logical subaccount. The AI gate + auto_executor use this to decide
-# how to trade for each sub_uid.
+# This file describes the roles, risk, symbol universe and timeframes for each
+# logical subaccount. The AI gate + auto_executor + signal_engine use this
+# to decide HOW and WHERE to trade for each sub_uid.
 #
-# NOTE:
-#   - sub_uid must match your Bybit MemberId UIDs in .env
-#   - name is a human label (used in dashboards/logs)
-#   - role is a high-level description only (free text for now)
-#   - risk_per_trade_pct is % of equity per trade (for now)
-#   - max_concurrent_positions is per-symbol cap for v1 executor
-#   - ai_profile is the model/profile name used by setup_memory + AI gate
-#   - timeframes is the list of chart intervals this strategy listens to
-#   - automation_mode: OFF | PAPER | LIVE
+# Fields:
+#   sub_uid                 -> Bybit MemberId UID (must match .env / your account)
+#   name                    -> human label
+#   role                    -> high-level description (free text)
+#   enabled                 -> whether this strategy is active in the registry
+#   symbols                 -> list of tradable symbols for this sub
+#   timeframes              -> list of TFs (as Bybit intervals: "1", "3", "5", "15", "60", "240", ...)
+#   risk_per_trade_pct      -> % of equity per trade (executor uses this)
+#   max_concurrent_positions-> per-symbol cap for v1 executor
+#   ai_profile              -> model/profile name for AI gate & setup memory
+#   automation_mode         -> how this strategy should behave:
+#                               OFF         = no auto-executor should trade it
+#                               LEARN_DRY   = signals + AI logging only (no live trades)
+#                               LIVE_CANARY = tiny real trades for learning
+#                               LIVE_FULL   = normal live trading (future)
 
 version: 1
 notes: |
@@ -24,27 +30,27 @@ notes: |
 
 subaccounts:
   # --------------------------------------------------------
-  # Sub 1 — Trend-follow (your current EXEC_SUB_UID)
+  # Sub 1 — Trend-follow (primary clean trend follower)
   # --------------------------------------------------------
   - sub_uid: 524630315
     name: Sub1_Trend
     role: trend_follow
     enabled: true
-    automation_mode: PAPER        # later: LIVE
     symbols:
       - BTCUSDT
       - ETHUSDT
       - SOLUSDT
     timeframes:
-      - "15"      # 15m
-      - "60"      # 1h
-    risk_per_trade_pct: 0.25      # 0.25% of equity per trade
-    max_concurrent_positions: 1   # 1 position per symbol at a time
+      - "15"      # 15m trend
+      - "60"      # 1h bias
+    risk_per_trade_pct: 0.25        # 0.25% per trade (will be scaled later for canary mode)
+    max_concurrent_positions: 1
     ai_profile: trend_v1
+    automation_mode: LEARN_DRY
     notes: |
       Primary "clean" trend follower. Focus on majors only,
       higher signal quality, lower noise. Meant to be the most
-      stable / boring sub.
+      stable / boring sub. Starts in LEARN_DRY mode.
 
   # --------------------------------------------------------
   # Sub 2 — Breakout / Momentum
@@ -53,22 +59,22 @@ subaccounts:
     name: Sub2_Breakout
     role: breakout_momentum
     enabled: true
-    automation_mode: PAPER
     symbols:
       - BTCUSDT
       - ETHUSDT
       - PUMPFUNUSDT
       - FARTCOINUSDT
     timeframes:
-      - "5"       # 5m
-      - "15"      # 15m
+      - "5"       # fast breakout trigger
+      - "15"      # context
     risk_per_trade_pct: 0.30
     max_concurrent_positions: 1
     ai_profile: breakout_v1
+    automation_mode: LEARN_DRY
     notes: |
       Aggressive breakout / momentum hunter. Can include spicy
       pairs like PUMPFUN and FARTCOIN, but still gated by AI and
-      your global risk limits.
+      global risk limits. Starts in LEARN_DRY (no live orders).
 
   # --------------------------------------------------------
   # Sub 3 — Intraday scalp (majors only)
@@ -77,18 +83,18 @@ subaccounts:
     name: Sub3_ScalpMajors
     role: scalp_intraday
     enabled: true
-    automation_mode: PAPER
     symbols:
       - BTCUSDT
       - ETHUSDT
       - SOLUSDT
     timeframes:
-      - "1"       # 1m
-      - "3"       # 3m
-      - "5"       # 5m
+      - "1"       # 1m entries
+      - "3"       # micro structure
+      - "5"       # confirmation
     risk_per_trade_pct: 0.20
     max_concurrent_positions: 2
     ai_profile: scalp_v1
+    automation_mode: LEARN_DRY
     notes: |
       Fast intraday scalps on highly liquid majors only.
       Later we’ll enforce stricter spread, volume and latency filters.
@@ -100,19 +106,19 @@ subaccounts:
     name: Sub4_SwingRevert
     role: swing_reversion
     enabled: true
-    automation_mode: PAPER
     symbols:
       - BTCUSDT
       - ETHUSDT
       - XRPUSDT
       - ADAUSDT
     timeframes:
-      - "15"      # 15m
-      - "60"      # 1h
-      - "240"     # 4h
+      - "15"
+      - "60"
+      - "240"     # 4h swing
     risk_per_trade_pct: 0.25
     max_concurrent_positions: 2
     ai_profile: reversion_v1
+    automation_mode: LEARN_DRY
     notes: |
       Looks for stretched moves on 1h/4h and fades them with
       modest size. Complementary to trend / breakout subs.
@@ -124,18 +130,18 @@ subaccounts:
     name: Sub5_AltTrend
     role: alt_trend
     enabled: true
-    automation_mode: PAPER
     symbols:
       - SOLUSDT
       - LINKUSDT
       - INJUSDT
       - OPUSDT
     timeframes:
-      - "15"      # 15m
-      - "60"      # 1h
+      - "15"
+      - "60"
     risk_per_trade_pct: 0.30
     max_concurrent_positions: 2
     ai_profile: alt_trend_v1
+    automation_mode: LEARN_DRY
     notes: |
       Follows trends on higher-beta alts only, with stricter
       volatility gates later via AI memory.
@@ -147,41 +153,43 @@ subaccounts:
     name: Sub6_Speculative
     role: microcap_spec
     enabled: true
-    automation_mode: PAPER
     symbols:
       - FARTCOINUSDT
       - PUMPFUNUSDT
     timeframes:
-      - "1"       # 1m
-      - "5"       # 5m
+      - "1"
+      - "5"
     risk_per_trade_pct: 0.20     # smaller size, but wild pairs
     max_concurrent_positions: 1
     ai_profile: spec_v1
+    automation_mode: LEARN_DRY
     notes: |
       This is the chaos pen. Only trades ultra-volatile pairs
       with extra risk controls later (breaker, spread checks, etc.).
+      Starts LEARN_DRY to avoid setting your account on fire.
 
   # --------------------------------------------------------
-  # Sub 7 — Canary / Experimental
+  # Sub 7 — Canary / Experimental (first to go tiny-live)
   # --------------------------------------------------------
   - sub_uid: 524649709
     name: Sub7_Canary
     role: canary_experimental
     enabled: true
-    automation_mode: PAPER
     symbols:
       - BTCUSDT
       - ETHUSDT
-      - SOLUSDT    # swapped placeholder for real alt
+      - SOLUSDT
     timeframes:
-      - "5"       # 5m
-      - "15"      # 15m
-    risk_per_trade_pct: 0.10
+      - "5"
+      - "15"
+    risk_per_trade_pct: 0.05     # 0.05% per trade = canary micro size
     max_concurrent_positions: 1
     ai_profile: canary_v1
+    automation_mode: LIVE_CANARY
     notes: |
       Canary sub for testing new models/logic before promoting
-      them to other subs. Always smallest risk.
+      them to other subs. This will be the FIRST sub where we
+      turn off DRY_RUN and let the system trade tiny live size.
 
   # --------------------------------------------------------
   # Sub 8 — Swing Multi-Asset
@@ -190,7 +198,6 @@ subaccounts:
     name: Sub8_SwingMulti
     role: swing_multi
     enabled: true
-    automation_mode: PAPER
     symbols:
       - BTCUSDT
       - ETHUSDT
@@ -198,11 +205,12 @@ subaccounts:
       - LINKUSDT
       - INJUSDT
     timeframes:
-      - "60"      # 1h
-      - "240"     # 4h
+      - "30"
+      - "240"
     risk_per_trade_pct: 0.25
     max_concurrent_positions: 3
     ai_profile: swing_v1
+    automation_mode: LEARN_DRY
     notes: |
       Medium-term swings with more relaxed trade frequency.
       Good candidate for multi-day holding rules later.
@@ -214,17 +222,17 @@ subaccounts:
     name: Sub9_Range
     role: range_intraday
     enabled: true
-    automation_mode: PAPER
     symbols:
       - BTCUSDT
       - ETHUSDT
       - XRPUSDT
     timeframes:
-      - "5"       # 5m
-      - "15"      # 15m
+      - "5"
+      - "15"
     risk_per_trade_pct: 0.20
     max_concurrent_positions: 2
     ai_profile: range_v1
+    automation_mode: LEARN_DRY
     notes: |
       Specifically hunts ranges and fade setups. In future, AI
       gate will check volatility compression & failed breakouts.
@@ -236,7 +244,6 @@ subaccounts:
     name: Sub10_ManualOnly
     role: manual_discretionary
     enabled: false               # important: no auto-trading expected
-    automation_mode: OFF
     symbols:
       - BTCUSDT
       - ETHUSDT
@@ -244,11 +251,12 @@ subaccounts:
       - FARTCOINUSDT
       - PUMPFUNUSDT
     timeframes:
-      - "5"       # 5m
-      - "15"      # 15m
+      - "5"
+      - "15"
     risk_per_trade_pct: 0.00
     max_concurrent_positions: 0
     ai_profile: manual_only
+    automation_mode: OFF
     notes: |
       Reserved for your full discretionary control. No auto_executor
       should be launched for this sub_uid. System may still log/analyze

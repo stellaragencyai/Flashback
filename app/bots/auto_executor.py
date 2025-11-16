@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Flashback — Auto Executor v2 (Strategy-aware, multi-sub, AI-gated)
+Flashback — Auto Executor v2 (Strategy-aware, multi-sub, AI-gated + canary sizing)
 
 Purpose
 -------
@@ -9,7 +9,7 @@ Purpose
 - For EACH strategy defined in config/strategies.yaml:
     • Decide if that strategy should care about the signal
       (symbol + timeframe match via strategy_gate).
-    • Check `enabled` and `automation_mode` (OFF / PAPER / LIVE).
+    • Check `enabled` and `automation_mode` (OFF / PAPER / LEARN_DRY / LIVE_CANARY / LIVE_FULL).
     • Run the candidate through the AI gate (ai_gate_decide).
     • If allowed, size and place entry orders on Bybit (MAIN unified account).
 - Let TP/SL Manager handle exits via ladders / stop logic.
@@ -38,12 +38,13 @@ Anything extra is ignored.
 
 .env
 ----
-    EXEC_ENABLED=true|false          # master on/off (default true)
-    EXEC_DRY_RUN=true|false          # if true, NEVER send live orders
+    EXEC_ENABLED=true|false               # master on/off (default true)
+    EXEC_DRY_RUN=true|false               # if true, NEVER send live orders
     EXEC_SIGNALS_PATH=signals/observed.jsonl
     EXEC_POLL_SECONDS=2
-    EXEC_DEFAULT_RISK_PCT=0.25       # fallback if strategy has no risk_per_trade_pct
-    EXEC_SUB_FILTER=524630315,524633243  # optional list of sub_uids to act for
+    EXEC_DEFAULT_RISK_PCT=0.25            # fallback if strategy has no risk_per_trade_pct
+    EXEC_SUB_FILTER=524630315,524633243   # optional list of sub_uids to act for
+    EXEC_CANARY_MAX_NOTIONAL=5            # USDT cap per trade for LIVE_CANARY mode
 
 Dependencies
 ------------
@@ -105,6 +106,9 @@ EXEC_DRY_RUN = str(os.getenv("EXEC_DRY_RUN", "true")).strip().lower() in ("1", "
 EXEC_SIGNALS_PATH = Path(os.getenv("EXEC_SIGNALS_PATH", "signals/observed.jsonl"))
 EXEC_POLL_SECONDS = int(os.getenv("EXEC_POLL_SECONDS", "2"))
 EXEC_DEFAULT_RISK_PCT = Decimal(os.getenv("EXEC_DEFAULT_RISK_PCT", "0.25"))
+
+# Hard cap for LIVE_CANARY mode (USDT notional per trade)
+EXEC_CANARY_MAX_NOTIONAL = Decimal(os.getenv("EXEC_CANARY_MAX_NOTIONAL", "5"))
 
 # Optional: restrict executor to only some sub_uids (comma-separated)
 _raw_filter = os.getenv("EXEC_SUB_FILTER", "").strip()
@@ -230,6 +234,7 @@ def _compute_qty(
     symbol: str,
     risk_pct: Decimal,
     signal: Dict[str, Any],
+    automation_mode: str,
 ) -> Optional[Decimal]:
     """
     Compute a naive qty:
@@ -237,7 +242,8 @@ def _compute_qty(
         - risk_pct% of equity as notional
         - qty = notional / price
 
-    Uses latest price or `entry_price`/`price` hint from signal.
+    With safety for LIVE_CANARY mode:
+        - notional is capped at EXEC_CANARY_MAX_NOTIONAL.
     """
     try:
         equity = Decimal(str(get_equity_usdt()))
@@ -250,6 +256,11 @@ def _compute_qty(
     notional = (equity * risk_pct / Decimal(100)).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
     if notional <= 0:
         return None
+
+    mode_up = automation_mode.upper()
+    if mode_up == "LIVE_CANARY":
+        if notional > EXEC_CANARY_MAX_NOTIONAL:
+            notional = EXEC_CANARY_MAX_NOTIONAL
 
     px_hint = signal.get("entry_price") or signal.get("price")
     price: Optional[Decimal]
@@ -288,7 +299,8 @@ def _place_market_order(symbol: str, side: str, qty: Decimal, reason: str, strat
 
     if EXEC_DRY_RUN:
         log_info(
-            f"[EXEC][DRY] {strategy_lbl} → MARKET {symbol} {side} qty={_fmt_dec(qty)} | reason={reason}"
+            f"[EXEC][DRY] {strategy_lbl} → MARKET {symbol} {side} "
+            f"qty={_fmt_dec(qty)} | reason={reason}"
         )
         return True
 
@@ -305,7 +317,8 @@ def _place_market_order(symbol: str, side: str, qty: Decimal, reason: str, strat
     try:
         bybit_post("/v5/order/create", body)
         log_info(
-            f"[EXEC] {strategy_lbl} placed MARKET {symbol} {side} qty={_fmt_dec(qty)} | reason={reason}"
+            f"[EXEC] {strategy_lbl} placed MARKET {symbol} {side} "
+            f"qty={_fmt_dec(qty)} | reason={reason}"
         )
         return True
     except Exception as e:
@@ -352,7 +365,6 @@ def _handle_signal_for_strategy(sig: Dict[str, Any], strat: Dict[str, Any]) -> N
     if not symbol:
         return
 
-    # Side normalization
     side = sig.get("side") or sig.get("direction")
     if side not in ("Buy", "Sell"):
         return
@@ -362,7 +374,6 @@ def _handle_signal_for_strategy(sig: Dict[str, Any], strat: Dict[str, Any]) -> N
         return
 
     if not _sub_filter_allows(sub_uid):
-        # This strategy is not in EXEC_SUB_FILTER, ignore
         return
 
     # Strategy must be enabled and not OFF
@@ -372,7 +383,7 @@ def _handle_signal_for_strategy(sig: Dict[str, Any], strat: Dict[str, Any]) -> N
         log_info(f"[EXEC] {strategy_label(strat)} is OFF; ignoring signal for {symbol}.")
         return
 
-    # strategy_max_concurrent: rough interpretation for now
+    # Concurrency (rough, global per symbol)
     max_conc = strategy_max_concurrent(strat)
     open_pos = _get_open_positions_for_symbol(symbol)
     if max_conc <= 0 and open_pos:
@@ -382,14 +393,24 @@ def _handle_signal_for_strategy(sig: Dict[str, Any], strat: Dict[str, Any]) -> N
         )
         return
 
-    # For now, we disallow multiple open positions on the same symbol across ALL strategies.
-    # Later we can tag positions by owner and refine this.
     if open_pos:
         log_info(
             f"[EXEC] Global skip for {symbol}: there is already an open position; "
             f"{strategy_label(strat)} will not add another."
         )
         return
+
+    # --- Automation mode handling ----------------
+    raw_mode = str(strat.get("automation_mode", "") or "").upper()
+    if not raw_mode:
+        raw_mode = "LIVE" if is_strategy_live(strat) else "PAPER"
+
+    automation_mode = raw_mode  # e.g. LEARN_DRY, LIVE_CANARY, LIVE_FULL, PAPER
+
+    effective_live = not (EXEC_DRY_RUN or is_strategy_paper(strat))
+    effective_mode = automation_mode if effective_live else "PAPER"
+
+    lbl = strategy_label(strat)
 
     # --- AI gate -------------------
     now = datetime.utcnow()
@@ -415,18 +436,17 @@ def _handle_signal_for_strategy(sig: Dict[str, Any], strat: Dict[str, Any]) -> N
         features=features,
     )
 
-    lbl = strategy_label(strat)
-
     if not allowed:
         log_info(
             f"[EXEC][AI_BLOCK] {lbl} symbol={symbol} side={side} "
-            f"score={score:.2f} reason={reason_ai}"
+            f"score={score:.2f} reason={reason_ai} mode={automation_mode}"
         )
         return
 
     log_info(
         f"[EXEC][AI_OK] {lbl} symbol={symbol} side={side} "
-        f"score={score:.2f} reason={reason_ai}"
+        f"score={score:.2f} reason={reason_ai} "
+        f"mode={automation_mode} effective_mode={effective_mode} dry_run={EXEC_DRY_RUN}"
     )
 
     # --- Risk & sizing -------------
@@ -435,26 +455,23 @@ def _handle_signal_for_strategy(sig: Dict[str, Any], strat: Dict[str, Any]) -> N
         log_info(f"[EXEC] {lbl} has 0 risk_per_trade_pct; skipping {symbol}.")
         return
 
-    qty = _compute_qty(symbol, rpct, sig)
+    qty = _compute_qty(symbol, rpct, sig, automation_mode)
     if qty is None or qty <= 0:
-        log_warn(f"[EXEC] {lbl} unable to compute size for {symbol} with risk_pct={rpct}.")
+        log_warn(
+            f"[EXEC] {lbl} unable to compute size for {symbol} "
+            f"with risk_pct={rpct} mode={automation_mode}."
+        )
         return
-
-    # --- Mode handling: PAPER vs LIVE ------------
-    # Global EXEC_DRY_RUN overrides everything: if true, NOTHING is live.
-    mode_str = "LIVE"
-    if EXEC_DRY_RUN or is_strategy_paper(strat):
-        mode_str = "PAPER"
 
     reason_str = str(sig.get("reason", "signal")).strip() or "signal"
 
     log_info(
-        f"[EXEC] {lbl} mode={mode_str} symbol={symbol} side={side} "
+        f"[EXEC] {lbl} mode={effective_mode} symbol={symbol} side={side} "
         f"risk={rpct}% qty={_fmt_dec(qty)} reason={reason_str}"
     )
 
-    if mode_str == "PAPER":
-        # Just log; do not send to Bybit
+    # PAPER / LEARN_DRY / EXEC_DRY_RUN → no live orders
+    if effective_mode == "PAPER":
         return
 
     # Actually place order
@@ -473,9 +490,7 @@ def _handle_signal(sig: Dict[str, Any]) -> None:
         timeframe = timeframe.strip() or None
 
     matching_strats = _matching_strategies_for_signal(symbol, timeframe)
-
     if not matching_strats:
-        # No strategy cares about this symbol/timeframe
         return
 
     for strat in matching_strats:
@@ -497,6 +512,7 @@ def loop() -> None:
         f"Signals path: {EXEC_SIGNALS_PATH}\n"
         f"State file: {STATE_PATH}\n"
         f"DRY_RUN (global override): {EXEC_DRY_RUN}\n"
+        f"Canary max notional: {EXEC_CANARY_MAX_NOTIONAL}\n"
         f"Sub filter: {EXEC_SUB_FILTER if EXEC_SUB_FILTER else 'ALL'}"
     )
 
