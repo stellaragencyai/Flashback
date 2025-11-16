@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Flashback — Auto Executor v2 (Strategy-aware, multi-sub, AI-gated + canary sizing)
+Flashback — Auto Executor v2 (Strategy-aware, multi-sub, AI-gated + canary sizing + guard-aware)
 
 Purpose
 -------
@@ -11,7 +11,8 @@ Purpose
       (symbol + timeframe match via strategy_gate).
     • Check `enabled` and `automation_mode` (OFF / PAPER / LEARN_DRY / LIVE_CANARY / LIVE_FULL).
     • Run the candidate through the AI gate (ai_gate_decide).
-    • If allowed, size and place entry orders on Bybit (MAIN unified account).
+    • If allowed, size and place entry orders on Bybit (MAIN unified account),
+      subject to Portfolio Guard (daily loss limits & per-trade risk caps).
 - Let TP/SL Manager handle exits via ladders / stop logic.
 
 Key ideas
@@ -58,6 +59,8 @@ Dependencies
         ai_gate_decide
     - app.core.notifier_bot:
         get_notifier("main")
+    - app.core.portfolio_guard:
+        can_open_trade
 
 State
 -----
@@ -96,6 +99,9 @@ from app.core.strategy_gate import (
 
 from app.ai.executor_ai_gate import ai_gate_decide
 from app.core.notifier_bot import get_notifier
+
+# Portfolio-level risk guard (daily limits + per-trade caps)
+from app.core import portfolio_guard
 
 # ---------- Config & paths ---------- #
 
@@ -235,32 +241,42 @@ def _compute_qty(
     risk_pct: Decimal,
     signal: Dict[str, Any],
     automation_mode: str,
-) -> Optional[Decimal]:
+) -> Tuple[Optional[Decimal], Optional[Decimal], Optional[Decimal]]:
     """
-    Compute a naive qty:
+    Compute position size & risk inputs for Portfolio Guard.
+
+    Steps:
         - get equity in USDT
-        - risk_pct% of equity as notional
+        - risk_notional = risk_pct% of equity (this is treated as risk_usd)
+        - for LIVE_CANARY: cap notional at EXEC_CANARY_MAX_NOTIONAL
         - qty = notional / price
 
-    With safety for LIVE_CANARY mode:
-        - notional is capped at EXEC_CANARY_MAX_NOTIONAL.
+    Returns:
+        (qty, equity_usd, risk_usd)
+
+    If anything fails, all three may be None or qty <= 0.
     """
     try:
         equity = Decimal(str(get_equity_usdt()))
     except Exception:
-        return None
+        return None, None, None
 
     if equity <= 0:
-        return None
+        return None, equity, None
 
-    notional = (equity * risk_pct / Decimal(100)).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
-    if notional <= 0:
-        return None
+    # Base "risk" notional: conservative approximation of per-trade risk
+    risk_usd = (equity * risk_pct / Decimal(100)).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+    if risk_usd <= 0:
+        return None, equity, risk_usd
+
+    notional = risk_usd
 
     mode_up = automation_mode.upper()
     if mode_up == "LIVE_CANARY":
         if notional > EXEC_CANARY_MAX_NOTIONAL:
             notional = EXEC_CANARY_MAX_NOTIONAL
+            # Risk is now capped to the canary notional
+            risk_usd = notional
 
     px_hint = signal.get("entry_price") or signal.get("price")
     price: Optional[Decimal]
@@ -276,16 +292,16 @@ def _compute_qty(
         try:
             price = Decimal(str(last_price(symbol)))
         except Exception:
-            return None
+            return None, equity, risk_usd
 
     if price <= 0:
-        return None
+        return None, equity, risk_usd
 
     qty = (notional / price).quantize(Decimal("0.0001"), rounding=ROUND_DOWN)
     if qty <= 0:
-        return None
+        return None, equity, risk_usd
 
-    return qty
+    return qty, equity, risk_usd
 
 
 def _place_market_order(symbol: str, side: str, qty: Decimal, reason: str, strategy_lbl: str) -> bool:
@@ -455,7 +471,7 @@ def _handle_signal_for_strategy(sig: Dict[str, Any], strat: Dict[str, Any]) -> N
         log_info(f"[EXEC] {lbl} has 0 risk_per_trade_pct; skipping {symbol}.")
         return
 
-    qty = _compute_qty(symbol, rpct, sig, automation_mode)
+    qty, equity, risk_usd = _compute_qty(symbol, rpct, sig, automation_mode)
     if qty is None or qty <= 0:
         log_warn(
             f"[EXEC] {lbl} unable to compute size for {symbol} "
@@ -463,11 +479,34 @@ def _handle_signal_for_strategy(sig: Dict[str, Any], strat: Dict[str, Any]) -> N
         )
         return
 
+    if equity is None or equity <= 0 or risk_usd is None or risk_usd <= 0:
+        log_warn(
+            f"[EXEC] {lbl} missing equity/risk inputs for {symbol} "
+            f"(equity={equity}, risk_usd={risk_usd}); skipping."
+        )
+        return
+
+    # --- Portfolio Guard check -------------
+    guard_allowed, guard_reason = portfolio_guard.can_open_trade(
+        sub_uid=sub_uid,
+        strategy_name=lbl,
+        risk_usd=risk_usd,
+        equity_now_usd=equity,
+    )
+
+    if not guard_allowed:
+        log_warn(
+            f"[EXEC][GUARD_BLOCK] {lbl} symbol={symbol} side={side} "
+            f"risk={_fmt_usd(risk_usd)} equity={_fmt_usd(equity)} | {guard_reason}"
+        )
+        return
+
     reason_str = str(sig.get("reason", "signal")).strip() or "signal"
 
     log_info(
         f"[EXEC] {lbl} mode={effective_mode} symbol={symbol} side={side} "
-        f"risk={rpct}% qty={_fmt_dec(qty)} reason={reason_str}"
+        f"risk_pct={rpct}% risk_usd={_fmt_usd(risk_usd)} qty={_fmt_dec(qty)} "
+        f"reason={reason_str}"
     )
 
     # PAPER / LEARN_DRY / EXEC_DRY_RUN → no live orders
