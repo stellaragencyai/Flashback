@@ -1,0 +1,101 @@
+subaccounts:
+  - name: "Sub1_Trend"
+    sub_uid: 524630315
+    role: "trend_follow"
+    entry_timeframe: "5m"
+    bias_timeframe: "1h"
+    symbols: ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+    risk_per_trade_pct: 0.25
+    max_concurrent_positions: 2
+    exit_profile: "standard_5"
+    ai_profile: "trend_v1"
+
+  - name: "Sub2_Breakout"
+    sub_uid: 524633243
+    role: "breakout_impulse"
+    entry_timeframe: "1m"
+    bias_timeframe: "15m"
+    symbols: ["BTCUSDT", "PUMPFUNUSDT", "FARTCOINUSDT"]
+    risk_per_trade_pct: 0.30
+    max_concurrent_positions: 3
+    exit_profile: "standard_5"
+    ai_profile: "bo_v1"
+
+  - name: "Sub3_MeanRev"
+    sub_uid: 524634622
+    role: "mean_reversion"
+    entry_timeframe: "3m"
+    bias_timeframe: "15m"
+    symbols: ["BTCUSDT", "ETHUSDT", "XRPUSDT"]
+    risk_per_trade_pct: 0.20
+    max_concurrent_positions: 2
+    exit_profile: "custom_range"
+    ai_profile: "mr_v1"
+
+  - name: "Sub4_Swing"
+    sub_uid: 524636309
+    role: "swing_trend"
+    entry_timeframe: "15m"
+    bias_timeframe: "4h"
+    symbols: ["BTCUSDT", "ETHUSDT", "SOLUSDT", "LINKUSDT"]
+    risk_per_trade_pct: 0.25
+    max_concurrent_positions: 3
+    exit_profile: "standard_5"
+    ai_profile: "swing_v1"
+
+  - name: "Sub5_NewsMomentum"
+    sub_uid: 524637467
+    role: "news_momentum"
+    entry_timeframe: "1m"
+    bias_timeframe: "5m"
+    symbols: ["BTCUSDT", "ETHUSDT", "PUMPFUNUSDT", "FARTCOINUSDT"]
+    risk_per_trade_pct: 0.30
+    max_concurrent_positions: 4
+    exit_profile: "custom_momo"
+    ai_profile: "news_v1"
+
+  - name: "Sub6_VolExpand"
+    sub_uid: 524638768
+    role: "volatility_expansion"
+    entry_timeframe: "5m"
+    bias_timeframe: "1h"
+    symbols: ["BTCUSDT", "ETHUSDT", "SOLUSDT", "OPUSDT"]
+    risk_per_trade_pct: 0.25
+    max_concurrent_positions: 3
+    exit_profile: "standard_5"
+    ai_profile: "vol_v1"
+
+  - name: "Sub7_Canary"
+    sub_uid: 524649709
+    role: "canary_experimental"
+    entry_timeframe: "3m"
+    bias_timeframe: "15m"
+    symbols: ["BTCUSDT", "ETHUSDT", "FARTCOINUSDT", "PUMPFUNUSDT"]
+    risk_per_trade_pct: 0.05        # tiny by design
+    max_concurrent_positions: 1
+    exit_profile: "standard_5"
+    ai_profile: "canary_v1"
+
+  - name: "Sub8_CorrFilter"
+    sub_uid: 524650929
+    role: "correlation_filtered_trend"
+    entry_timeframe: "5m"
+    bias_timeframe: "1h"
+    symbols: ["BTCUSDT", "ETHUSDT", "SOLUSDT", "INJUSDT"]
+    risk_per_trade_pct: 0.20
+    max_concurrent_positions: 3
+    exit_profile: "standard_5"
+    ai_profile: "corr_v1"
+
+  - name: "Sub9_Pattern"
+    sub_uid: 524693375
+    role: "pattern_breakout"
+    entry_timeframe: "5m"
+    bias_timeframe: "1h"
+    symbols: ["BTCUSDT", "ETHUSDT", "DOGEUSDT", "ADAUSDT"]
+    risk_per_trade_pct: 0.25
+    max_concurrent_positions: 3
+    exit_profile: "custom_pattern"
+    ai_profile: "pattern_v1"
+
+# Sub10 (524700541) = stays manual / under your full control, not in AI list.
