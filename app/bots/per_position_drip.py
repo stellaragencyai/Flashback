@@ -1,5 +1,5 @@
 # app/bots/per_position_drip.py
-# Flashback — Per-Position Drip (Main, upgraded)
+# Flashback — Per-Position Drip (Main, upgraded DRY + console logging)
 #
 # What it does
 # - Polls latest closed PnL entries (linear).
@@ -14,6 +14,11 @@
 #   2) Uses central notifier (get_notifier("main")) instead of raw send_tg.
 #   3) Safer Decimal handling for equity vs MAIN_BAL_FLOOR_USD / DRIP_MIN_USD.
 #   4) Clearer logs & small env-based tuning for polling interval.
+#   5) ROOT-relative state path: state/drip_state.json (no CWD dependency).
+#   6) DRIP_DRY_RUN env flag:
+#          DRIP_DRY_RUN=true  -> simulate sub transfers, log only.
+#          DRIP_DRY_RUN=false -> perform real inter_transfer_usdt_to_sub.
+#   7) Console + Telegram logging wrappers so you see everything in the terminal.
 #
 # Requirements:
 #   - DRIP_PCT, DRIP_MIN_USD, MAIN_BAL_FLOOR_USD defined in flashback_common/.env
@@ -39,11 +44,61 @@ from app.core.flashback_common import (
 from app.core.subs import rr_next, peek_current  # peek_current kept for future use
 from app.core.notifier_bot import get_notifier
 
-tg = get_notifier("main")
+# --- Paths / config ---
 
-STATE_PATH = Path("app/state/drip_state.json")
+# ROOT = project root: .../Flashback
+ROOT = Path(__file__).resolve().parents[2]
+STATE_DIR = ROOT / "state"
+STATE_DIR.mkdir(parents=True, exist_ok=True)
+
+STATE_PATH = STATE_DIR / "drip_state.json"
 CATEGORY = "linear"
 POLL_SECONDS = int(os.getenv("DRIP_POLL_SECONDS", "6"))  # can tune via .env
+
+
+def _parse_bool(val, default: bool = False) -> bool:
+    """
+    Parse a boolean from env-like strings.
+    Accepts: "1", "true", "yes", "on" as True.
+    """
+    if val is None:
+        return default
+    if isinstance(val, bool):
+        return val
+    return str(val).strip().lower() in ("1", "true", "yes", "on")
+
+
+DRIP_DRY_RUN = _parse_bool(os.getenv("DRIP_DRY_RUN"), True)
+
+tg = get_notifier("main")
+
+
+# --- Console + Telegram logging wrappers ---
+
+
+def log_info(msg: str) -> None:
+    print(msg, flush=True)
+    try:
+        tg.info(msg)
+    except Exception:
+        pass
+
+
+def log_warn(msg: str) -> None:
+    print(msg, flush=True)
+    try:
+        tg.warn(msg)
+    except Exception:
+        pass
+
+
+def log_error(msg: str) -> None:
+    print(msg, flush=True)
+    try:
+        tg.error(msg)
+    except Exception:
+        pass
+
 
 # ---------------- State helpers ---------------- #
 
@@ -89,12 +144,40 @@ def _fmt_usd(x: Decimal) -> str:
     return f"${x.quantize(Decimal('0.01'), rounding=ROUND_DOWN)}"
 
 
+# ---------------- Transfer wrapper ---------------- #
+
+
+def _drip_transfer_to_sub(uid: str, label: str, amt: Decimal) -> None:
+    """
+    DRY-aware wrapper around inter_transfer_usdt_to_sub.
+    """
+    if amt <= 0:
+        return
+
+    if DRIP_DRY_RUN:
+        log_info(
+            f"[Drip][DRY] Would transfer {_fmt_usd(amt)} from MAIN UNIFIED -> {label} ({uid})."
+        )
+        return
+
+    # Live mode
+    inter_transfer_usdt_to_sub(uid, amt)
+    log_info(
+        f"[Drip] Transferred {_fmt_usd(amt)} from MAIN UNIFIED -> {label} ({uid})."
+    )
+
+
 # ---------------- Main loop ---------------- #
 
 
 def loop() -> None:
     st = _load_state()
-    tg.info("💧 Per-Position Drip started.")
+    log_info(
+        "💧 Per-Position Drip started.\n"
+        f"  DRIP_DRY_RUN: {'ON' if DRIP_DRY_RUN else 'OFF'}\n"
+        f"  STATE_PATH: {STATE_PATH}\n"
+        f"  POLL_SECONDS: {POLL_SECONDS}"
+    )
     last_row_id: Optional[str] = st.get("last_row_id")
 
     # Normalize floors & pct as Decimals
@@ -136,10 +219,11 @@ def loop() -> None:
 
                 if pnl > 0:
                     eq = get_equity_usdt()
+                    eq_dec = Decimal(str(eq))
 
-                    if eq < floor:
-                        tg.info(
-                            f"🟨 Drip skipped for {sym} (equity {_fmt_usd(eq)} "
+                    if eq_dec < floor:
+                        log_info(
+                            f"🟨 Drip skipped for {sym} (equity {_fmt_usd(eq_dec)} "
                             f"below floor {_fmt_usd(floor)})."
                         )
                     else:
@@ -150,22 +234,25 @@ def loop() -> None:
                                 uid = sub.get("uid")
                                 label = sub.get("label", f"sub-{uid}")
                                 try:
-                                    inter_transfer_usdt_to_sub(uid, amt)
-                                    tg.info(
-                                        f"✅ Drip: {sym} profit {_fmt_usd(pnl)} → "
-                                        f"sent {_fmt_usd(amt)} to {label} ({uid})."
-                                    )
+                                    _drip_transfer_to_sub(uid, label, amt)
+                                    # Only log success message separately in live mode;
+                                    # in DRY mode the wrapper already logs.
+                                    if not DRIP_DRY_RUN:
+                                        log_info(
+                                            f"✅ Drip: {sym} profit {_fmt_usd(pnl)} → "
+                                            f"sent {_fmt_usd(amt)} to {label} ({uid})."
+                                        )
                                 except Exception as e:
-                                    tg.warn(
+                                    log_warn(
                                         f"⚠️ Drip transfer failed to {label} ({uid}): {e}"
                                     )
                             else:
-                                tg.warn(
+                                log_warn(
                                     f"⚠️ Drip: no subaccount available for {sym} "
                                     f"profit {_fmt_usd(pnl)} (rr_next() returned None)."
                                 )
                         else:
-                            tg.info(
+                            log_info(
                                 f"ℹ️ Drip too small for {sym}: "
                                 f"would send {_fmt_usd(amt)}, min is {_fmt_usd(drip_min)}."
                             )
@@ -178,7 +265,7 @@ def loop() -> None:
             time.sleep(POLL_SECONDS)
 
         except Exception as e:
-            tg.error(f"[Drip] {e}")
+            log_error(f"[Drip] {e}")
             time.sleep(8)
 
 

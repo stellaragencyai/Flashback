@@ -1,101 +1,211 @@
+# config/strategies.yaml
+#
+# Flashback — Strategy Registry
+#
+# This file describes the roles, risk, and symbol universe for each
+# logical subaccount. The AI gate + auto_executor use this to decide
+# how to trade for each sub_uid.
+#
+# NOTE:
+#   - sub_uid must match your Bybit MemberId UIDs in .env
+#   - name is a human label (used in dashboards/logs)
+#   - role is a high-level description only (free text for now)
+#   - risk_per_trade_pct is % of MAIN equity per trade (for now)
+#   - max_concurrent_positions is per-symbol cap for v1 executor
+#   - ai_profile is the model/profile name used by setup_memory + AI gate
+
+version: 1
+notes: |
+  v1 strategies for 10 subaccounts:
+    - 9 AI-driven profiles (trend, breakout, scalp, etc.)
+    - 1 manual-only profile (no auto executor to be attached).
+
 subaccounts:
-  - name: "Sub1_Trend"
-    sub_uid: 524630315
-    role: "trend_follow"
-    entry_timeframe: "5m"
-    bias_timeframe: "1h"
-    symbols: ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
-    risk_per_trade_pct: 0.25
-    max_concurrent_positions: 2
-    exit_profile: "standard_5"
-    ai_profile: "trend_v1"
+  # --------------------------------------------------------
+  # Sub 1 — Trend-follow (your current EXEC_SUB_UID)
+  # --------------------------------------------------------
+  - sub_uid: 524630315
+    name: Sub1_Trend
+    role: trend_follow
+    enabled: true
+    symbols:
+      - BTCUSDT
+      - ETHUSDT
+      - SOLUSDT
+    risk_per_trade_pct: 0.25      # 0.25% of equity per trade
+    max_concurrent_positions: 1   # 1 position per symbol at a time
+    ai_profile: trend_v1
+    notes: |
+      Primary "clean" trend follower. Focus on majors only,
+      higher signal quality, lower noise. Meant to be the most
+      stable / boring sub.
 
-  - name: "Sub2_Breakout"
-    sub_uid: 524633243
-    role: "breakout_impulse"
-    entry_timeframe: "1m"
-    bias_timeframe: "15m"
-    symbols: ["BTCUSDT", "PUMPFUNUSDT", "FARTCOINUSDT"]
+  # --------------------------------------------------------
+  # Sub 2 — Breakout / Momentum
+  # --------------------------------------------------------
+  - sub_uid: 524633243
+    name: Sub2_Breakout
+    role: breakout_momentum
+    enabled: true
+    symbols:
+      - BTCUSDT
+      - ETHUSDT
+      - PUMPFUNUSDT
+      - FARTCOINUSDT
     risk_per_trade_pct: 0.30
-    max_concurrent_positions: 3
-    exit_profile: "standard_5"
-    ai_profile: "bo_v1"
-
-  - name: "Sub3_MeanRev"
-    sub_uid: 524634622
-    role: "mean_reversion"
-    entry_timeframe: "3m"
-    bias_timeframe: "15m"
-    symbols: ["BTCUSDT", "ETHUSDT", "XRPUSDT"]
-    risk_per_trade_pct: 0.20
-    max_concurrent_positions: 2
-    exit_profile: "custom_range"
-    ai_profile: "mr_v1"
-
-  - name: "Sub4_Swing"
-    sub_uid: 524636309
-    role: "swing_trend"
-    entry_timeframe: "15m"
-    bias_timeframe: "4h"
-    symbols: ["BTCUSDT", "ETHUSDT", "SOLUSDT", "LINKUSDT"]
-    risk_per_trade_pct: 0.25
-    max_concurrent_positions: 3
-    exit_profile: "standard_5"
-    ai_profile: "swing_v1"
-
-  - name: "Sub5_NewsMomentum"
-    sub_uid: 524637467
-    role: "news_momentum"
-    entry_timeframe: "1m"
-    bias_timeframe: "5m"
-    symbols: ["BTCUSDT", "ETHUSDT", "PUMPFUNUSDT", "FARTCOINUSDT"]
-    risk_per_trade_pct: 0.30
-    max_concurrent_positions: 4
-    exit_profile: "custom_momo"
-    ai_profile: "news_v1"
-
-  - name: "Sub6_VolExpand"
-    sub_uid: 524638768
-    role: "volatility_expansion"
-    entry_timeframe: "5m"
-    bias_timeframe: "1h"
-    symbols: ["BTCUSDT", "ETHUSDT", "SOLUSDT", "OPUSDT"]
-    risk_per_trade_pct: 0.25
-    max_concurrent_positions: 3
-    exit_profile: "standard_5"
-    ai_profile: "vol_v1"
-
-  - name: "Sub7_Canary"
-    sub_uid: 524649709
-    role: "canary_experimental"
-    entry_timeframe: "3m"
-    bias_timeframe: "15m"
-    symbols: ["BTCUSDT", "ETHUSDT", "FARTCOINUSDT", "PUMPFUNUSDT"]
-    risk_per_trade_pct: 0.05        # tiny by design
     max_concurrent_positions: 1
-    exit_profile: "standard_5"
-    ai_profile: "canary_v1"
+    ai_profile: breakout_v1
+    notes: |
+      Aggressive breakout / momentum hunter. Can include spicy
+      pairs like PUMPFUN and FARTCOIN, but still gated by AI and
+      your global risk limits.
 
-  - name: "Sub8_CorrFilter"
-    sub_uid: 524650929
-    role: "correlation_filtered_trend"
-    entry_timeframe: "5m"
-    bias_timeframe: "1h"
-    symbols: ["BTCUSDT", "ETHUSDT", "SOLUSDT", "INJUSDT"]
+  # --------------------------------------------------------
+  # Sub 3 — Intraday scalp (majors only)
+  # --------------------------------------------------------
+  - sub_uid: 524634622
+    name: Sub3_ScalpMajors
+    role: scalp_intraday
+    enabled: true
+    symbols:
+      - BTCUSDT
+      - ETHUSDT
+      - SOLUSDT
     risk_per_trade_pct: 0.20
-    max_concurrent_positions: 3
-    exit_profile: "standard_5"
-    ai_profile: "corr_v1"
+    max_concurrent_positions: 2
+    ai_profile: scalp_v1
+    notes: |
+      Fast intraday scalps on highly liquid majors only.
+      Later we’ll enforce stricter spread, volume and latency filters.
 
-  - name: "Sub9_Pattern"
-    sub_uid: 524693375
-    role: "pattern_breakout"
-    entry_timeframe: "5m"
-    bias_timeframe: "1h"
-    symbols: ["BTCUSDT", "ETHUSDT", "DOGEUSDT", "ADAUSDT"]
+  # --------------------------------------------------------
+  # Sub 4 — Swing Reversion / Mean Reversion
+  # --------------------------------------------------------
+  - sub_uid: 524636309
+    name: Sub4_SwingRevert
+    role: swing_reversion
+    enabled: true
+    symbols:
+      - BTCUSDT
+      - ETHUSDT
+      - XRPUSDT
+      - ADAUSDT
+    risk_per_trade_pct: 0.25
+    max_concurrent_positions: 2
+    ai_profile: reversion_v1
+    notes: |
+      Looks for stretched moves on 1h/4h and fades them with
+      modest size. Complementary to trend / breakout subs.
+
+  # --------------------------------------------------------
+  # Sub 5 — Alt Trend / Beta play
+  # --------------------------------------------------------
+  - sub_uid: 524637467
+    name: Sub5_AltTrend
+    role: alt_trend
+    enabled: true
+    symbols:
+      - SOLUSDT
+      - LINKUSDT
+      - INJUSDT
+      - OPUSDT
+    risk_per_trade_pct: 0.30
+    max_concurrent_positions: 2
+    ai_profile: alt_trend_v1
+    notes: |
+      Follows trends on higher-beta alts only, with stricter
+      volatility gates later via AI memory.
+
+  # --------------------------------------------------------
+  # Sub 6 — Microcap / Speculative
+  # --------------------------------------------------------
+  - sub_uid: 524638768
+    name: Sub6_Speculative
+    role: microcap_spec
+    enabled: true
+    symbols:
+      - FARTCOINUSDT
+      - PUMPFUNUSDT
+    risk_per_trade_pct: 0.20     # smaller size, but wild pairs
+    max_concurrent_positions: 1
+    ai_profile: spec_v1
+    notes: |
+      This is the chaos pen. Only trades ultra-volatile pairs
+      with extra risk controls later (breaker, spread checks, etc.).
+
+  # --------------------------------------------------------
+  # Sub 7 — Canary / Experimental
+  # --------------------------------------------------------
+  - sub_uid: 524649709
+    name: Sub7_Canary
+    role: canary_experimental
+    enabled: true
+    symbols:
+      - BTCUSDT
+      - ETHUSDT
+      - one_random_alt   # placeholder; can refine later
+    risk_per_trade_pct: 0.10
+    max_concurrent_positions: 1
+    ai_profile: canary_v1
+    notes: |
+      Canary sub for testing new models/logic before promoting
+      them to other subs. Always smallest risk.
+
+  # --------------------------------------------------------
+  # Sub 8 — Swing Multi-Asset
+  # --------------------------------------------------------
+  - sub_uid: 524650929
+    name: Sub8_SwingMulti
+    role: swing_multi
+    enabled: true
+    symbols:
+      - BTCUSDT
+      - ETHUSDT
+      - SOLUSDT
+      - LINKUSDT
+      - INJUSDT
     risk_per_trade_pct: 0.25
     max_concurrent_positions: 3
-    exit_profile: "custom_pattern"
-    ai_profile: "pattern_v1"
+    ai_profile: swing_v1
+    notes: |
+      Medium-term swings with more relaxed trade frequency.
+      Good candidate for multi-day holding rules later.
 
-# Sub10 (524700541) = stays manual / under your full control, not in AI list.
+  # --------------------------------------------------------
+  # Sub 9 — Range / Mean-Reversion Intraday
+  # --------------------------------------------------------
+  - sub_uid: 524693375
+    name: Sub9_Range
+    role: range_intraday
+    enabled: true
+    symbols:
+      - BTCUSDT
+      - ETHUSDT
+      - XRPUSDT
+    risk_per_trade_pct: 0.20
+    max_concurrent_positions: 2
+    ai_profile: range_v1
+    notes: |
+      Specifically hunts ranges and fade setups. In future, AI
+      gate will check volatility compression & failed breakouts.
+
+  # --------------------------------------------------------
+  # Sub 10 — Manual / No automation
+  # --------------------------------------------------------
+  - sub_uid: 524700541
+    name: Sub10_ManualOnly
+    role: manual_discretionary
+    enabled: false               # important: no auto-trading expected
+    symbols:
+      - BTCUSDT
+      - ETHUSDT
+      - SOLUSDT
+      - FARTCOINUSDT
+      - PUMPFUNUSDT
+    risk_per_trade_pct: 0.00
+    max_concurrent_positions: 0
+    ai_profile: manual_only
+    notes: |
+      Reserved for your full discretionary control. No auto_executor
+      should be launched for this sub_uid. System may still log/analyze
+      trades routed through this account in the future.
