@@ -8,32 +8,30 @@ Purpose
 Prevent the executor from stacking too many positions in highly correlated
 symbols at the same time.
 
-This module is a thin wrapper over app.core.corr_gate_v2, exposing
-a simple `allow(...)` function for the executor:
+Usage from executor:
 
     from app.core.corr_gate import allow as corr_allow
 
     if not corr_allow(symbol):
         # block trade
-
-API
----
-allow(symbol: str, max_corr: float = 0.8, max_pairs: int = 1) -> bool
-    Returns True if it's OK to open a *new* position in `symbol` under the
-    current correlated exposure, otherwise False.
 """
 
 from __future__ import annotations
 
-from typing import Dict, Tuple
+# Try both app.core and core imports so it works in different launch modes
+try:
+    from app.core.corr_gate_v2 import (
+        set_corr,
+        get_corr,
+        correlated_exposure_too_high,
+    )
+except ImportError:
+    from core.corr_gate_v2 import (  # type: ignore
+        set_corr,
+        get_corr,
+        correlated_exposure_too_high,
+    )
 
-from app.core.corr_gate_v2 import (
-    set_corr,
-    get_corr,
-    correlated_exposure_too_high,
-)
-
-# Re-export for configuration code if needed
 __all__ = [
     "allow",
     "set_corr",

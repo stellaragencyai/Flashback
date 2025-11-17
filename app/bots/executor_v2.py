@@ -36,7 +36,7 @@ from app.core.bybit_client import Bybit
 from app.core.notifier_bot import tg_send
 from app.core.feature_store import log_features
 from app.core.trade_classifier import classify as classify_trade
-from app.core.corr_gate import allow as corr_allow
+from app.core.corr_gate_v2 import allow as corr_allow
 from app.core.sizing import bayesian_size, risk_capped_qty
 from app.core.strategy_gate import (
     get_strategies_for_signal,
