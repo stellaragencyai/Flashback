@@ -27,17 +27,17 @@ import os
 from pathlib import Path
 from typing import Dict, Any
 
-from app.core.config import settings
-from app.core.logger import get_logger, bind_context
-from app.core.bybit_client import Bybit
-from app.core.notifier_bot import tg_send
+from core.config import settings
+from core.logger import get_logger, bind_context
+from core.bybit_client import Bybit
+from core.notifier_bot import tg_send
 
 # Feature memory + AI gating + risk logic
-from app.core.feature_store import log_features
-from app.core.trade_classifier import classify as classify_trade
-from app.core.corr_gate import allow as corr_allow
-from app.core.sizing import bayesian_size, risk_capped_qty
-from app.core.strategy_gate import should_strategy_handle
+from core.feature_store import log_features
+from core.trade_classifier import classify as classify_trade
+from core.corr_gate import allow as corr_allow
+from core.sizing import bayesian_size, risk_capped_qty
+from core.strategy_gate import should_strategy_handle
 
 log = get_logger("executor_v2")
 

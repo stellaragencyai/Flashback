@@ -57,7 +57,7 @@ class BotConfig:
 
 # We now use SCRIPT paths instead of "-m app.bots.X" to bypass package issues.
 BOTS: List[BotConfig] = [
-    BotConfig(name="tp_manager",      script="app/bots/tp_manager.py"),
+    BotConfig(name="tp_sl_manager",   script="app/bots/tp_sl_manager.py"),
     BotConfig(name="trade_journal",   script="app/bots/trade_journal.py"),
     BotConfig(name="portfolio_guard", script="app/bots/portfolio_guard.py"),
     BotConfig(name="risk_daemon",     script="app/bots/risk_daemon.py"),
@@ -65,6 +65,7 @@ BOTS: List[BotConfig] = [
     BotConfig(name="executor_v2",     script="app/bots/executor_v2.py"),
     BotConfig(name="observer",        script="app/bots/observer.py"),
 ]
+
 
 
 PYTHON = sys.executable  # use current interpreter (venv-safe)
