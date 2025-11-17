@@ -299,10 +299,12 @@ class Switchboard:
             New-style websockets handler: only `ws` is passed.
             Path is read from `ws.path` (for websockets >= 10.x).
             """
-            path = getattr(ws, "path", "/")
-            if path != "/ws/bot":
-                await ws.close(code=1008, reason="invalid path")
-                return
+            path = getattr(ws, "path", None)
+            log.info(f"[Switchboard] new connection, path={path!r}")
+
+            # For now, accept any path and just log it.
+            # If you want to re-enforce the path later, do:
+            #   if path != "/ws/bot": close...
             await self.handle_client(ws)
 
         log.info(f"[Switchboard] starting server on ws://{host}:{port}/ws/bot")
