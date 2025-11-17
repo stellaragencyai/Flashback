@@ -1,8 +1,11 @@
 # app/bots/trade_journal.py
-# Flashback — Trade Journal (Main, v3.2 — cleaner notifications + trade rating + guard-aware)
+# Flashback — Trade Journal (Main, v4.0 — WS-driven, cleaner notifications + trade rating + guard-aware)
 #
-# What it does
-# - Streams executions with a persistent cursor so we don't miss partials.
+# What it does (NOW WS-BASED)
+# - Consumes executions from state/ws_executions.jsonl (written by ws_switchboard).
+#   Each line:
+#       { "label": "main" | "flashback01" | ..., "ts": <epoch_ms>, "row": { ...Bybit exec row... } }
+# - Filters to label == "main" (this is MAIN journal).
 # - Classifies each new fill as ENTRY/ADD or PARTIAL EXIT based on current position side.
 # - On first entry per symbol: captures a rich OPEN snapshot:
 #       • symbol, side, direction (LONG/SHORT)
@@ -15,7 +18,7 @@
 #       • timestamps: ts_open_ms, ts_open_iso
 #       • num_adds, num_partials
 # - On each fill:
-#       • ENTRY / ADD -> concise “fill” notification
+#       • ENTRY / ADD -> concise “fill” / “add” notification
 #       • PARTIAL EXIT -> concise partial notification
 # - On full close (size -> 0): fetches closed PnL, composes a final trade summary,
 #   appends JSONL with:
@@ -27,9 +30,10 @@
 #       • guard_pnl_applied (bool) — whether Portfolio Guard was updated
 #
 # Files
-# - app/state/journal.jsonl         (append-only ledger of closed trades)
-# - app/state/journal_cursor.json   (stores Bybit executions cursor)
-# - app/state/journal_open.json     (last known open snapshot per symbol)
+# - state/journal.jsonl           (append-only ledger of closed trades)
+# - state/journal_ws.cursor       (byte offset into ws_executions.jsonl)
+# - state/journal_open.json       (last known open snapshot per symbol)
+# - state/ws_executions.jsonl     (produced by ws_switchboard_bot)
 
 import time
 import traceback
@@ -41,6 +45,7 @@ import orjson
 
 # ---- tolerant core imports (app.core -> core) ----
 try:
+    from app.core.config import settings
     from app.core.flashback_common import (
         bybit_get,
         list_open_positions,
@@ -51,6 +56,7 @@ try:
     )
     from app.core.notifier_bot import get_notifier
 except ImportError:
+    from core.config import settings  # type: ignore
     from core.flashback_common import (  # type: ignore
         bybit_get,
         list_open_positions,
@@ -71,15 +77,21 @@ except ImportError:
         portfolio_guard = None  # type: ignore[assignment]
 
 CATEGORY = "linear"
-POLL_SECONDS = 3
+POLL_SECONDS = 1.0  # WS bus poll interval
 
-JOURNAL_LEDGER = Path("app/state/journal.jsonl")
-CURSOR_PATH    = Path("app/state/journal_cursor.json")
-OPEN_STATE     = Path("app/state/journal_open.json")
+# Root + state dir, robust regardless of working dir
+ROOT: Path = getattr(settings, "ROOT", Path(__file__).resolve().parents[2])
+STATE_DIR: Path = ROOT / "state"
+STATE_DIR.mkdir(parents=True, exist_ok=True)
+
+JOURNAL_LEDGER = STATE_DIR / "journal.jsonl"
+CURSOR_PATH    = STATE_DIR / "journal_ws.cursor"
+OPEN_STATE     = STATE_DIR / "journal_open.json"
+EXEC_BUS_PATH  = STATE_DIR / "ws_executions.jsonl"
 
 # Journal metadata
 ACCOUNT_LABEL     = "MAIN"
-JOURNAL_VERSION   = 32  # 3.2: cleaner formatting, per-fill notifier
+JOURNAL_VERSION   = 40  # 4.0: WS-driven + cursor offset
 
 # Use dedicated journal notifier channel
 tg = get_notifier("journal")
@@ -116,18 +128,18 @@ def _write_jsonl(row: dict) -> None:
         f.write(orjson.dumps(row) + b"\n")
 
 
-def _load_cursor() -> Optional[str]:
+def _load_cursor_pos() -> int:
     try:
         data = orjson.loads(CURSOR_PATH.read_bytes())
-        cur = data.get("cursor", "") or ""
-        return cur or None
+        pos = int(data.get("pos", 0))
+        return max(0, pos)
     except Exception:
-        return None
+        return 0
 
 
-def _save_cursor(cur: Optional[str]) -> None:
+def _save_cursor_pos(pos: int) -> None:
     CURSOR_PATH.parent.mkdir(parents=True, exist_ok=True)
-    CURSOR_PATH.write_bytes(orjson.dumps({"cursor": cur or ""}))
+    CURSOR_PATH.write_bytes(orjson.dumps({"pos": int(pos)}))
 
 
 def _load_open_state() -> Dict[str, dict]:
@@ -357,7 +369,7 @@ def _rate_trade(
 
     return score, "; ".join(reasons)
 
-# ---------- executions stream helpers (clean notifications) ----------
+# ---------- executions helpers (classification + notifications) ----------
 
 def _notify_new_trade(snap: dict) -> None:
     """
@@ -453,25 +465,26 @@ def _notify_close_summary(
     )
     tg.trade(msg)
 
-# ---------- executions stream ----------
-
-def _fetch_exec_batch(cursor: Optional[str]) -> Tuple[List[dict], Optional[str]]:
-    params = {"category": CATEGORY, "limit": "200"}
-    if cursor:
-        params["cursor"] = cursor
-    r = bybit_get("/v5/execution/list", params)
-    result = (r.get("result", {}) or {})
-    rows = result.get("list", []) or []
-    next_cur = result.get("nextPageCursor") or None
-    return rows, next_cur
-
+# ---------- execution classification helpers ----------
 
 def _exec_is_trade(e: dict) -> bool:
-    # Filter to true trade executions
+    """
+    WS execution rows are slightly different than REST.
+    We treat as a trade if:
+      - execQty > 0
+      - execType contains 'trade' or 'fill' (case-insensitive), or is empty.
+    """
     try:
-        return (e.get("execType") == "Trade") and Decimal(str(e.get("execQty", "0"))) > 0
+        qty = Decimal(str(e.get("execQty", "0") or "0"))
     except Exception:
         return False
+    if qty <= 0:
+        return False
+
+    t = str(e.get("execType", "") or "").lower()
+    if not t:
+        return True
+    return ("trade" in t) or ("fill" in t)
 
 
 def _side_from_exec(e: dict) -> Optional[str]:
@@ -489,7 +502,7 @@ def _entry_order_meta(e: dict) -> Tuple[Optional[str], Optional[str], Optional[s
     liq = None
     if "isMaker" in e:
         try:
-            is_maker = str(e.get("isMaker")).lower() == "true"
+            is_maker = str(e.get("isMaker")).lower() in ("true", "1")
             liq = "MAKER" if is_maker else "TAKER"
         except Exception:
             liq = None
@@ -512,12 +525,58 @@ def _closed_pnl_latest(symbol: str) -> Tuple[Optional[Decimal], Optional[Decimal
     except Exception:
         return None, None
 
+# ---------- BUS READER ----------
+
+def _iter_new_exec_rows_for_main(start_pos: int) -> Tuple[List[dict], int]:
+    """
+    Reads new lines from state/ws_executions.jsonl starting at byte offset start_pos.
+    Returns (list_of_exec_rows_for_MAIN, new_pos).
+    """
+    if not EXEC_BUS_PATH.exists():
+        return [], start_pos
+
+    try:
+        file_size = EXEC_BUS_PATH.stat().st_size
+    except Exception:
+        return [], start_pos
+
+    # Handle truncation / rotation
+    if start_pos > file_size:
+        start_pos = 0
+
+    rows: List[dict] = []
+    pos = start_pos
+
+    try:
+        with EXEC_BUS_PATH.open("rb") as f:
+            f.seek(start_pos)
+            for line in f:
+                pos = f.tell()
+                if not line.strip():
+                    continue
+                try:
+                    payload = orjson.loads(line)
+                except Exception:
+                    continue
+
+                label = payload.get("label", "")
+                if label != "main":
+                    continue
+
+                row = payload.get("row") or {}
+                rows.append(row)
+    except Exception:
+        # Don't blow up the journal on bad bus I/O
+        return rows, pos
+
+    return rows, pos
+
 # ---------- main loop ----------
 
 def loop():
-    tg.info("📝 Flashback Trade Journal v3.2 (guard-aware, clean output) started.")
+    tg.info("📝 Flashback Trade Journal v4.0 (WS-driven, guard-aware, clean output) started.")
     open_state: Dict[str, dict] = _load_open_state()
-    cursor = _load_cursor()
+    cursor_pos: int = _load_cursor_pos()
 
     def _pos_map() -> Dict[str, dict]:
         m: Dict[str, dict] = {}
@@ -534,9 +593,13 @@ def loop():
     # On boot, announce any already-open positions (best-effort snapshot)
     for sym, p in pos_now.items():
         if sym not in open_state:
-            entry = Decimal(str(p["avgPrice"]))
-            size  = Decimal(str(p["size"]))
-            side  = p["side"]
+            try:
+                entry = Decimal(str(p["avgPrice"]))
+                size  = Decimal(str(p["size"]))
+            except Exception:
+                continue
+
+            side  = p.get("side", "")
             direction = _direction_from_side(side)
             sl    = _get_stop_from_position(p)
             sl_f, tps_f = _kline_infer_grid(sym, side, entry)
@@ -581,15 +644,22 @@ def loop():
 
     while True:
         try:
-            # 1) Pull a batch of executions
-            rows, next_cur = _fetch_exec_batch(cursor)
-            # Bybit returns newest-first; we want chronological
-            rows.reverse()
+            # 1) Pull new executions from WS bus for MAIN
+            rows, new_pos = _iter_new_exec_rows_for_main(cursor_pos)
+            if new_pos != cursor_pos:
+                cursor_pos = new_pos
+                _save_cursor_pos(cursor_pos)
+
+            if not rows:
+                time.sleep(POLL_SECONDS)
+                continue
 
             # 2) Refresh current positions
             pos_now = _pos_map()
+            cur_syms = set(pos_now.keys())
 
             # 3) Process executions to generate entry/add/partial pings
+            # rows are already in arrival order from bus
             for e in rows:
                 if not _exec_is_trade(e):
                     continue
@@ -599,12 +669,19 @@ def loop():
                 if not symbol or not side_exec:
                     continue
 
-                qty  = Decimal(str(e.get("execQty", "0")))
-                px   = Decimal(str(e.get("execPrice", "0")))
-                ts   = int(str(e.get("execTime", _now_ms())))
-                pos  = pos_now.get(symbol)
+                try:
+                    qty  = Decimal(str(e.get("execQty", "0")))
+                    px   = Decimal(str(e.get("execPrice", "0")))
+                except Exception:
+                    continue
 
-                # If there is a current position, get its side and size
+                exec_time_raw = e.get("execTime", _now_ms())
+                try:
+                    ts = int(str(exec_time_raw))
+                except Exception:
+                    ts = _now_ms()
+
+                pos  = pos_now.get(symbol)
                 pos_side = pos.get("side") if pos else None
                 pos_size = Decimal(str(pos.get("size", "0"))) if pos else Decimal("0")
 
@@ -620,12 +697,14 @@ def loop():
                     snap = open_state.get(symbol)
                     # New symbol or side changed: create/refresh snapshot
                     if snap is None or snap.get("side") != pos_side:
-                        # Build from current position snapshot if available
                         if pos:
-                            entry = Decimal(str(pos["avgPrice"]))
-                            size  = Decimal(str(pos["size"]))
+                            try:
+                                entry = Decimal(str(pos["avgPrice"]))
+                                size  = Decimal(str(pos["size"]))
+                            except Exception:
+                                continue
 
-                            side_now = pos["side"]
+                            side_now = pos.get("side", side_exec)
                             direction = _direction_from_side(side_now)
                             sl = _get_stop_from_position(pos)
                             sl_f, tps_f = _kline_infer_grid(symbol, side_now, entry)
@@ -666,7 +745,6 @@ def loop():
                             open_state[symbol] = snap
                             _save_open_state(open_state)
 
-                            # Notify new trade snapshot
                             _notify_new_trade(snap)
                         else:
                             # No position yet (race), still emit a lightweight fill
@@ -692,6 +770,7 @@ def loop():
                     _notify_partial(symbol, side_exec, qty, px, pos_size, partials)
 
             # 4) Detect full closures via positions diff and write ledger rows
+            pos_now = _pos_map()
             cur_syms = set(pos_now.keys())
             tracked_syms = list(open_state.keys())
             for sym in tracked_syms:
@@ -767,16 +846,10 @@ def loop():
                     }
                     _write_jsonl(row)
 
-                    # Clean, concise close summary
                     _notify_close_summary(row, num_adds, num_partials, guard_applied)
 
                     open_state.pop(sym, None)
                     _save_open_state(open_state)
-
-            # 5) Advance cursor and sleep
-            if next_cur is not None:
-                cursor = next_cur
-                _save_cursor(cursor)
 
             time.sleep(POLL_SECONDS)
 

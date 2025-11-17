@@ -11,21 +11,25 @@ What this bot does:
     • position
 - Logs incoming events with labels.
 - Sends concise Telegram messages on FULL LIMIT fills (per account).
+- Appends EVERY execution row to a JSONL bus:
+    state/ws_executions.jsonl
 
-This is the FIRST wiring step:
+This is the wiring layer:
 - Purely observational in terms of market (no order placement).
-- Acts as a live "fill notifier" using WebSockets.
-- Later, trade_journal, tp_sl_manager, etc., can subscribe to the same
-  data via a shared bus (jsonl, DB, etc.).
+- Becomes the single source of truth for executions for other bots
+  (trade_journal, drip variants, analytics, etc.).
 """
 
 from __future__ import annotations
 
 import asyncio
 import os
+import time
+from pathlib import Path
 from typing import Dict, Any
 
 from dotenv import load_dotenv
+import orjson
 
 from app.core.config import settings
 from app.core.logger import get_logger, bind_context
@@ -37,7 +41,36 @@ tg = get_notifier("main")
 
 ROOT = settings.ROOT
 ENV_PATH = ROOT / ".env"
+STATE_DIR = ROOT / "state"
+STATE_DIR.mkdir(parents=True, exist_ok=True)
+EXEC_BUS_PATH = STATE_DIR / "ws_executions.jsonl"
+
 load_dotenv(ENV_PATH)
+
+
+def _append_exec_to_bus(label: str, row: Dict[str, Any]) -> None:
+    """
+    Append a single execution event to the central JSONL bus.
+
+    Format per line:
+      {
+        "label": "main" | "flashback01" | ...,
+        "ts": 1731870000000,       # local epoch ms when we processed it
+        "row": { ... raw Bybit row ... }
+      }
+    """
+    try:
+        payload = {
+            "label": label,
+            "ts": int(time.time() * 1000),
+            "row": row,
+        }
+        with EXEC_BUS_PATH.open("ab") as f:
+            f.write(orjson.dumps(payload))
+            f.write(b"\n")
+    except Exception as e:
+        # This must NEVER kill the WS loop; just log it.
+        log.warning("Failed to append exec to bus: %r", e)
 
 
 def _load_main_creds() -> Dict[str, str]:
@@ -77,9 +110,12 @@ def _load_sub_creds() -> Dict[str, Dict[str, str]]:
 
 async def log_execution(label: str, row: Dict[str, Any]) -> None:
     """
-    Basic execution logger + full LIMIT fill notifier.
+    Core execution handler:
 
-    This runs for EVERY execution event received on WS for that account.
+    - Logs to ws_switchboard logger.
+    - Appends to state/ws_executions.jsonl (central bus).
+    - Sends Telegram on full LIMIT fills.
+    - Optional extra exec stream via WS_SWITCHBOARD_TG_EXEC_LEVEL.
     """
     b = bind_context(log, acct=label, topic="execution")
     sym = row.get("symbol")
@@ -96,7 +132,8 @@ async def log_execution(label: str, row: Dict[str, Any]) -> None:
     is_zero_leaves = leaves_qty_str in ("0", "0.0", "0.00", "0.000", "0.0000", "")
 
     b.info(
-        "WS exec: symbol=%s side=%s qty=%s price=%s type=%s realisedPnl=%s orderType=%s leavesQty=%s",
+        "WS exec: symbol=%s side=%s qty=%s price=%s type=%s realisedPnl=%s "
+        "orderType=%s leavesQty=%s",
         sym,
         side,
         qty,
@@ -107,20 +144,18 @@ async def log_execution(label: str, row: Dict[str, Any]) -> None:
         leaves_qty_str,
     )
 
+    # Append to bus (fire-and-forget)
+    _append_exec_to_bus(label, row)
+
     # --- FULL LIMIT FILL DETECTION ----------------------------------------
     # We consider it "full" if:
     #   - orderType == "limit"
     #   - leavesQty is effectively zero
-    # This is intentionally simple; your TP/SL ladder logic is elsewhere.
     is_full_limit_fill = order_type == "limit" and is_zero_leaves
 
     if is_full_limit_fill:
-        # Optional filter: only notify for real trades, not cancels/adjusts
         exec_type_str = (exec_type or "").lower()
-        if exec_type_str not in ("", "trade", "fill", "taker", "maker"):
-            # Strange exec types can be ignored if you want; for now still notify.
-            pass
-
+        # You can filter on exec_type_str if Bybit gets cute; for now we accept most.
         try:
             msg = (
                 f"✅ LIMIT filled [{label}] "
@@ -133,13 +168,15 @@ async def log_execution(label: str, row: Dict[str, Any]) -> None:
             b.warning("Telegram full-fill notify failed: %r", e)
 
     # --- Optional extra notifications -------------------------------------
-    # Light exec stream for debugging / early stages.
+    # Controlled via WS_SWITCHBOARD_TG_EXEC_LEVEL:
+    #   none  (default) -> only full-fill pings
+    #   warn           -> pings on non-zero realisedPnl
+    #   info           -> pings on every execution
     try:
         tg_level = os.getenv("WS_SWITCHBOARD_TG_EXEC_LEVEL", "none").lower()
         if tg_level == "info":
             tg.info(f"[WS][{label}] exec {sym} {side} qty={qty} px={price} pnl={realised}")
         elif tg_level == "warn":
-            # Only warn on non-zero realised pnl
             try:
                 if realised not in (None, "", "0", "0.0", "0.0000"):
                     tg.warn(f"[WS][{label}] exec {sym} {side} qty={qty} px={price} pnl={realised}")
@@ -175,6 +212,7 @@ async def log_position(label: str, row: Dict[str, Any]) -> None:
 
 async def main_async() -> None:
     log.info("WS Switchboard Bot starting (root=%s, env=%s)", ROOT, ENV_PATH)
+    log.info("Execution bus path: %s", EXEC_BUS_PATH)
 
     sw = WsSwitchboard()
 
@@ -189,7 +227,7 @@ async def main_async() -> None:
     subs = _load_sub_creds()
     for label, cfg in subs.items():
         if cfg["api_key"] and cfg["api_secret"]:
-            sw.add_account(cfg["label"], cfg["api_key"], cfg["api_secret"])
+            sw.add_account(label, cfg["api_key"], cfg["api_secret"])
         else:
             log.info("Subaccount %s has no WS creds; skipping.", label)
 
