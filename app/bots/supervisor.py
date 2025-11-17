@@ -16,12 +16,12 @@ Important:
 
 How to use
 ----------
-1. Make sure the referenced bot scripts exist under app/bots/.
-2. From the project root (Flashback):
-       python app/bots/supervisor.py
+From the project root (Flashback):
+
+    python app/bots/supervisor.py
 
 Env:
-- SUPERVISOR_LOG = INFO / DEBUG etc
+- SUPERVISOR_LOG = INFO / DEBUG / WARNING / ERROR
 """
 
 from __future__ import annotations
@@ -32,10 +32,16 @@ import os
 import signal
 import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import List, Optional
 
 
-# ---------- Logging ---------- #
+# ---------- Paths & logging ---------- #
+
+# Resolve project ROOT from this file:
+# <ROOT>/app/bots/supervisor.py  -> parents[2] == ROOT
+SUPERVISOR_PATH = Path(__file__).resolve()
+ROOT = SUPERVISOR_PATH.parents[2]
 
 LOG_LEVEL = os.getenv("SUPERVISOR_LOG", "INFO").upper()
 logging.basicConfig(
@@ -44,18 +50,23 @@ logging.basicConfig(
 )
 log = logging.getLogger("supervisor")
 
+log.info("Supervisor file: %s", SUPERVISOR_PATH)
+log.info("Project root resolved to: %s", ROOT)
 
-# ---------- Config: define your 7 bots here ---------- #
+
+# ---------- Config: define your bots here ---------- #
 
 @dataclass
 class BotConfig:
     name: str
     module: Optional[str] = None      # unused for now
-    script: Optional[str] = None      # relative script path
+    script: Optional[str] = None      # path relative to ROOT
     extra_args: List[str] = field(default_factory=list)
 
 
-# We now use SCRIPT paths instead of "-m app.bots.X" to bypass package issues.
+# NOTE:
+# - Comment out any bot you do NOT want the supervisor to run.
+# - All script paths are interpreted relative to ROOT.
 BOTS: List[BotConfig] = [
     BotConfig(name="tp_sl_manager",   script="app/bots/tp_sl_manager.py"),
     BotConfig(name="trade_journal",   script="app/bots/trade_journal.py"),
@@ -65,8 +76,6 @@ BOTS: List[BotConfig] = [
     BotConfig(name="executor_v2",     script="app/bots/executor_v2.py"),
     BotConfig(name="observer",        script="app/bots/observer.py"),
 ]
-
-
 
 PYTHON = sys.executable  # use current interpreter (venv-safe)
 
@@ -82,7 +91,28 @@ class BotProcess:
 
 class Supervisor:
     def __init__(self, bots: List[BotConfig]) -> None:
-        self.bots = [BotProcess(cfg=b) for b in bots]
+        # Filter out bots whose script doesn't exist (and log it)
+        self.bots: List[BotProcess] = []
+        for b in bots:
+            if b.script:
+                script_path = ROOT / b.script
+                if not script_path.is_file():
+                    log.error(
+                        "Bot %s script not found at %s; skipping this bot.",
+                        b.name,
+                        script_path,
+                    )
+                    continue
+            self.bots.append(BotProcess(cfg=b))
+
+        if not self.bots:
+            log.error("No valid bots configured. Nothing to supervise.")
+        else:
+            log.info(
+                "Configured bots: %s",
+                ", ".join(bp.cfg.name for bp in self.bots),
+            )
+
         self._stop = asyncio.Event()
 
     async def run(self) -> None:
@@ -93,6 +123,10 @@ class Supervisor:
         - wait until stop() is called (SIGINT or SIGTERM)
         """
         log.info("Supervisor starting, managing %d bots", len(self.bots))
+
+        if not self.bots:
+            log.warning("No bots to manage. Exiting.")
+            return
 
         # Start a watcher task per bot
         tasks = [
@@ -148,26 +182,40 @@ class Supervisor:
             bp.process = await self._spawn_process(bp.cfg)
 
             if bp.process is None:
-                log.error("Failed to spawn bot %s, retrying in %.1fs", name, bp.restart_delay)
+                log.error(
+                    "Failed to spawn bot %s, retrying in %.1fs",
+                    name,
+                    bp.restart_delay,
+                )
                 await asyncio.sleep(bp.restart_delay)
                 continue
 
             # Wait until it exits
             returncode = await bp.process.wait()
             if self._stop.is_set():
-                log.info("Bot %s stopped (supervisor shutting down), rc=%s", name, returncode)
+                log.info(
+                    "Bot %s stopped (supervisor shutting down), rc=%s",
+                    name,
+                    returncode,
+                )
                 break
 
-            log.warning("Bot %s exited with rc=%s, restarting in %.1fs", name, returncode, bp.restart_delay)
+            log.warning(
+                "Bot %s exited with rc=%s, restarting in %.1fs",
+                name,
+                returncode,
+                bp.restart_delay,
+            )
             await asyncio.sleep(bp.restart_delay)
 
     async def _spawn_process(self, cfg: BotConfig) -> Optional[asyncio.subprocess.Process]:
         """
         Spawn a single bot process based on its config.
-        We now use the script path form (`python app/bots/x.py`).
+        We now use the script path form (`python app/bots/x.py`) and always start
+        from ROOT to keep imports consistent.
         """
         if cfg.script:
-            cmd = [PYTHON, cfg.script] + cfg.extra_args
+            cmd = [PYTHON, str(ROOT / cfg.script)] + cfg.extra_args
         elif cfg.module:
             # Fallback if you ever want to go back to -m style
             cmd = [PYTHON, "-m", cfg.module] + cfg.extra_args
@@ -179,14 +227,18 @@ class Supervisor:
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
+                cwd=str(ROOT),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
         except FileNotFoundError:
             log.error("Failed to start %s: file/module not found", cfg.name)
             return None
+        except Exception as e:
+            log.error("Failed to start %s: %r", cfg.name, e)
+            return None
 
-        # Optional: background readers for stdout/stderr
+        # Background readers for stdout/stderr
         asyncio.create_task(self._stream_logs(proc.stdout, cfg.name, "STDOUT"))
         asyncio.create_task(self._stream_logs(proc.stderr, cfg.name, "STDERR"))
 
@@ -225,7 +277,7 @@ async def _main_async() -> None:
         try:
             loop.add_signal_handler(sig, _handle_sig)
         except NotImplementedError:
-            # Windows + ProactorEventLoop might not support this, fallback to Ctrl+C
+            # Windows ProactorEventLoop might not support signals
             pass
 
     await sup.run()
