@@ -5,7 +5,7 @@ Flashback — Central Telegram Notifier (env-compatible with current .env)
 
 Purpose:
 - Provide a single, sane place to send Telegram messages from all bots.
-- Support multiple Telegram bots (main + up to 10 sub-bots + journal bot).
+- Support multiple Telegram bots (main + up to 10 sub-bots + journal bot + drip bot).
 - Enforce per-bot:
     • Rate limiting (no message floods).
     • Message de-duplication (no identical spam every second).
@@ -15,7 +15,7 @@ Purpose:
 
     from app.core.notifier_bot import get_notifier
 
-    tg = get_notifier("flashback01")   # or "main", "journal"
+    tg = get_notifier("flashback01")   # or "main", "journal", "drip"
     tg.info("flashback01 bot started")
     tg.trade("Opened LONG BTCUSDT ...")
     tg.error("Exception in executor: ...")
@@ -31,6 +31,11 @@ ENV EXPECTATIONS (matches your current .env):
   TG_TOKEN_JOURNAL=...
   TG_CHAT_JOURNAL=...
   TG_LEVEL_JOURNAL=info   # optional
+
+  # Drip bot (for equity_drip_bot)
+  TG_TOKEN_DRIP=...
+  TG_CHAT_DRIP=...
+  TG_LEVEL_DRIP=info      # optional
 
   # Subaccount bots
   TG_TOKEN_SUB_1=...
@@ -129,11 +134,13 @@ def _parse_level(s: Optional[str], default: str = "info") -> str:
 # Logical names you will use in code:
 #   "main"
 #   "journal"
+#   "drip"
 #   "flashback01" .. "flashback10"
 #
 # These map to:
 #   main        -> TG_TOKEN_MAIN / TG_CHAT_MAIN / TG_LEVEL_MAIN
 #   journal     -> TG_TOKEN_JOURNAL / TG_CHAT_JOURNAL / TG_LEVEL_JOURNAL
+#   drip        -> TG_TOKEN_DRIP / TG_CHAT_DRIP / TG_LEVEL_DRIP
 #   flashback01 -> TG_TOKEN_SUB_1 / TG_CHAT_SUB_1 / TG_LEVEL_SUB_1
 #   flashback02 -> TG_TOKEN_SUB_2 / TG_CHAT_SUB_2 / TG_LEVEL_SUB_2
 #   ...
@@ -149,6 +156,12 @@ CHANNEL_ENV_KEYS: Dict[str, Dict[str, str]] = {
         "token": "TG_TOKEN_JOURNAL",
         "chat": "TG_CHAT_JOURNAL",
         "level": "TG_LEVEL_JOURNAL",
+    },
+    # 💧 Drip bot notifier
+    "drip": {
+        "token": "TG_TOKEN_DRIP",
+        "chat": "TG_CHAT_DRIP",
+        "level": "TG_LEVEL_DRIP",
     },
 }
 
@@ -330,7 +343,7 @@ def _load_channel_config(name: str) -> TelegramNotifier:
     """
     Load token, chat_id, and level for a logical channel name.
 
-    name: "main", "journal", "flashback01", "flashback02", ..., "flashback10"
+    name: "main", "journal", "drip", "flashback01", "flashback02", ..., "flashback10"
     """
     cfg = CHANNEL_ENV_KEYS.get(name, {})
     token_key = cfg.get("token")
@@ -340,7 +353,7 @@ def _load_channel_config(name: str) -> TelegramNotifier:
     token = os.getenv(token_key, "") if token_key else ""
     chat_id = os.getenv(chat_key, "") if chat_key else ""
 
-    # Level: TG_LEVEL_MAIN / TG_LEVEL_SUB_1 / TG_LEVEL_JOURNAL / etc.
+    # Level: TG_LEVEL_MAIN / TG_LEVEL_SUB_1 / TG_LEVEL_JOURNAL / TG_LEVEL_DRIP / etc.
     # Fallback to TG_LEVEL_DEFAULT.
     level_raw = os.getenv(level_key) if level_key else None
     if not level_raw:
@@ -373,10 +386,12 @@ def get_notifier(name: str = "main") -> TelegramNotifier:
         tg_main = get_notifier("main")
         tg_fb01 = get_notifier("flashback01")
         tg_journal = get_notifier("journal")
+        tg_drip = get_notifier("drip")
 
         tg_main.info("Supervisor starting...")
         tg_fb01.trade("flashback01: LONG BTCUSDT 25x at 61234.5")
         tg_journal.info("Journal: new closed trade logged.")
+        tg_drip.info("Drip bot online.")
     """
     name = name.strip()
     if name in _NOTIFIERS:
@@ -419,7 +434,7 @@ def tg_send(
     """
     Backwards-compatible convenience wrapper used by older bots.
 
-    - channel: which notifier to use ("main", "journal", "flashback01", etc.)
+    - channel: which notifier to use ("main", "journal", "drip", "flashback01", etc.)
     - level:   "info" | "error" | "trade"
     """
     try:
