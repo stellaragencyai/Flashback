@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Flashback — Core config
+Flashback — Core Config
 
-Central "settings" object shared across bots.
+Provides a central `settings` object with important paths.
 """
 
 from __future__ import annotations
@@ -14,16 +14,19 @@ import os
 
 class Settings:
     def __init__(self) -> None:
-        # Project root = parent of this "core" package
-        # e.g. C:/Users/nolan/Desktop/Flashback
+        # Project root: .../Flashback
         self.ROOT: Path = Path(__file__).resolve().parents[1]
 
-        # Optional explicit DB path; fallback: ROOT/state/flashback.db
-        default_db = self.ROOT / "state" / "flashback.db"
-        db_env = os.getenv("DB_PATH")
-        self.DB_PATH: Path = Path(db_env) if db_env else default_db
+        # State directory (for cursors, db, etc.)
+        self.STATE_DIR: Path = self.ROOT / "state"
+        self.STATE_DIR.mkdir(parents=True, exist_ok=True)
 
-        # You can add more global settings later (env name, log level, etc.)
+        # Database path (if/when needed by db layer)
+        db_env = os.getenv("DB_PATH")
+        if db_env:
+            self.DB_PATH: Path = Path(db_env)
+        else:
+            self.DB_PATH: Path = self.STATE_DIR / "flashback.db"
 
 
 settings = Settings()
