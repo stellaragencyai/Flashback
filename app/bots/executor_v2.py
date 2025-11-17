@@ -48,7 +48,6 @@ from app.core.strategy_gate import (
 from app.core.portfolio_guard import can_open_trade
 
 
-
 log = get_logger("executor_v2")
 
 # Paths
@@ -148,9 +147,15 @@ async def handle_strategy_signal(
         bound.info("AI gate rejected: %s", clf.get("reason"))
         return
 
-    # Correlation gate
-    if not corr_allow(symbol):
-        bound.info("Correlation gate rejected for %s", symbol)
+    # Correlation gate (unpack (allowed, reason))
+    try:
+        allowed_corr, corr_reason = corr_allow(symbol)
+    except Exception as e:
+        bound.warning("Correlation gate error for %s: %r; bypassing.", symbol, e)
+        allowed_corr, corr_reason = True, "corr_gate_v2 exception, bypassed"
+
+    if not allowed_corr:
+        bound.info("Correlation gate rejected for %s: %s", symbol, corr_reason)
         return
 
     # Feature logging (best-effort)
@@ -235,10 +240,21 @@ async def executor_loop() -> None:
                 pos = 0
                 save_cursor(pos)
 
-            with SIGNAL_FILE.open("r", encoding="utf-8") as f:
+            # Read in binary mode so tell() is allowed during iteration
+            with SIGNAL_FILE.open("rb") as f:
                 f.seek(pos)
-                for line in f:
+                for raw in f:
                     pos = f.tell()
+
+                    try:
+                        line = raw.decode("utf-8").strip()
+                    except Exception as e:
+                        log.warning("executor_v2: failed to decode line at pos=%s: %r", pos, e)
+                        continue
+
+                    if not line:
+                        continue
+
                     await process_signal_line(line)
                     save_cursor(pos)
 
