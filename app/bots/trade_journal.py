@@ -37,19 +37,36 @@ from typing import Dict, Tuple, List, Optional, Any
 
 import orjson
 
-from app.core.flashback_common import (
-    bybit_get,
-    list_open_positions,
-    get_equity_usdt,
-    get_ticks,
-    psnap,
-    atr14,
-)
+# ---- tolerant core imports (app.core -> core) ----
+try:
+    from app.core.flashback_common import (
+        bybit_get,
+        list_open_positions,
+        get_equity_usdt,
+        get_ticks,
+        psnap,
+        atr14,
+    )
+    from app.core.notifier_bot import get_notifier
+except ImportError:
+    from core.flashback_common import (  # type: ignore
+        bybit_get,
+        list_open_positions,
+        get_equity_usdt,
+        get_ticks,
+        psnap,
+        atr14,
+    )
+    from core.notifier_bot import get_notifier  # type: ignore
 
-from app.core.notifier_bot import get_notifier
-
-# Portfolio-wide guard (daily risk brain)
-from app.core import portfolio_guard
+# Portfolio-wide guard (daily risk brain) — optional
+try:
+    from app.core import portfolio_guard  # type: ignore[attr-defined]
+except ImportError:
+    try:
+        from core import portfolio_guard  # type: ignore[attr-defined]
+    except ImportError:
+        portfolio_guard = None  # type: ignore[assignment]
 
 CATEGORY = "linear"
 POLL_SECONDS = 3
@@ -419,6 +436,7 @@ def loop():
     for sym, p in pos_now.items():
         if sym not in open_state:
             entry = Decimal(str(p["avgPrice"]))
+
             size  = Decimal(str(p["size"]))
             side  = p["side"]
             direction = _direction_from_side(side)
@@ -515,6 +533,7 @@ def loop():
                         if pos:
                             entry = Decimal(str(pos["avgPrice"]))
                             size  = Decimal(str(pos["size"]))
+
                             side_now = pos["side"]
                             direction = _direction_from_side(side_now)
                             sl = _get_stop_from_position(pos)
@@ -641,11 +660,11 @@ def loop():
                         num_partials=num_partials,
                     )
 
-                    # Apply realized PnL to Portfolio Guard
+                    # Apply realized PnL to Portfolio Guard (if available)
                     guard_applied = False
-                    if pnl is not None:
+                    if pnl is not None and portfolio_guard is not None:
                         try:
-                            portfolio_guard.record_pnl(pnl)
+                            portfolio_guard.record_pnl(pnl)  # type: ignore[arg-type]
                             guard_applied = True
                         except Exception as _e:
                             # Log but don't kill the journal
