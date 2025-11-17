@@ -9,13 +9,14 @@ What this bot does:
 - Subscribes each configured account to:
     • execution
     • position
-- Logs incoming events with labels (and can emit limited Telegram messages)
+- Logs incoming events with labels.
+- Sends concise Telegram messages on FULL LIMIT fills (per account).
 
-This is the FIRST step:
-- Purely observational: it does NOT place orders.
-- Meant to prove WebSocket connectivity for all accounts.
-- Later, trade_journal, tp_sl_manager, etc., will subscribe to this switchboard
-  instead of polling Bybit directly.
+This is the FIRST wiring step:
+- Purely observational in terms of market (no order placement).
+- Acts as a live "fill notifier" using WebSockets.
+- Later, trade_journal, tp_sl_manager, etc., can subscribe to the same
+  data via a shared bus (jsonl, DB, etc.).
 """
 
 from __future__ import annotations
@@ -76,9 +77,9 @@ def _load_sub_creds() -> Dict[str, Dict[str, str]]:
 
 async def log_execution(label: str, row: Dict[str, Any]) -> None:
     """
-    Basic execution logger for now.
+    Basic execution logger + full LIMIT fill notifier.
 
-    Later, trade_journal will hook into this instead of polling.
+    This runs for EVERY execution event received on WS for that account.
     """
     b = bind_context(log, acct=label, topic="execution")
     sym = row.get("symbol")
@@ -88,20 +89,53 @@ async def log_execution(label: str, row: Dict[str, Any]) -> None:
     exec_type = row.get("execType")
     realised = row.get("realisedPnl")
 
+    order_type = (row.get("orderType") or "").lower()
+    leaves_qty_raw = row.get("leavesQty", "")
+    leaves_qty_str = str(leaves_qty_raw) if leaves_qty_raw is not None else ""
+    # crude "zero" detection, Bybit loves strings
+    is_zero_leaves = leaves_qty_str in ("0", "0.0", "0.00", "0.000", "0.0000", "")
+
     b.info(
-        "WS exec: symbol=%s side=%s qty=%s price=%s type=%s realisedPnl=%s",
+        "WS exec: symbol=%s side=%s qty=%s price=%s type=%s realisedPnl=%s orderType=%s leavesQty=%s",
         sym,
         side,
         qty,
         price,
         exec_type,
         realised,
+        order_type,
+        leaves_qty_str,
     )
 
-    # Optional: very light Telegram ping for first wiring / debugging
-    # Comment out if it gets noisy.
+    # --- FULL LIMIT FILL DETECTION ----------------------------------------
+    # We consider it "full" if:
+    #   - orderType == "limit"
+    #   - leavesQty is effectively zero
+    # This is intentionally simple; your TP/SL ladder logic is elsewhere.
+    is_full_limit_fill = order_type == "limit" and is_zero_leaves
+
+    if is_full_limit_fill:
+        # Optional filter: only notify for real trades, not cancels/adjusts
+        exec_type_str = (exec_type or "").lower()
+        if exec_type_str not in ("", "trade", "fill", "taker", "maker"):
+            # Strange exec types can be ignored if you want; for now still notify.
+            pass
+
+        try:
+            msg = (
+                f"✅ LIMIT filled [{label}] "
+                f"{sym} {side} qty={qty} @ {price} "
+                f"(realisedPnl={realised})"
+            )
+            # Use trade() so it gets the 💹 prefix in main stream
+            tg.trade(msg)
+        except Exception as e:
+            b.warning("Telegram full-fill notify failed: %r", e)
+
+    # --- Optional extra notifications -------------------------------------
+    # Light exec stream for debugging / early stages.
     try:
-        tg_level = os.getenv("WS_SWITCHBOARD_TG_EXEC_LEVEL", "warn").lower()
+        tg_level = os.getenv("WS_SWITCHBOARD_TG_EXEC_LEVEL", "none").lower()
         if tg_level == "info":
             tg.info(f"[WS][{label}] exec {sym} {side} qty={qty} px={price} pnl={realised}")
         elif tg_level == "warn":
@@ -136,8 +170,7 @@ async def log_position(label: str, row: Dict[str, Any]) -> None:
         entry,
         liq,
     )
-
-    # Optional: Telegram on size transitions only later if needed.
+    # No Telegram spam here (yet). We'll add smarter logic later if needed.
 
 
 async def main_async() -> None:
@@ -156,7 +189,7 @@ async def main_async() -> None:
     subs = _load_sub_creds()
     for label, cfg in subs.items():
         if cfg["api_key"] and cfg["api_secret"]:
-            sw.add_account(label, cfg["api_key"], cfg["api_secret"])
+            sw.add_account(cfg["label"], cfg["api_key"], cfg["api_secret"])
         else:
             log.info("Subaccount %s has no WS creds; skipping.", label)
 
@@ -166,7 +199,8 @@ async def main_async() -> None:
 
     # Quick Telegram summary
     try:
-        tg.info("📡 WS Switchboard Bot online (accounts: %s)", ", ".join(sorted(sw._clients.keys())))
+        accounts_list = ", ".join(sorted(sw._clients.keys())) or "NONE"
+        tg.info(f"📡 WS Switchboard Bot online (accounts: {accounts_list})")
     except Exception:
         pass
 
