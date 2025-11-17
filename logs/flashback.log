@@ -1,0 +1,62 @@
+2025-11-17 20:29:39,660 [INFO] [executor_v2] executor_v2 starting at cursor=0
+2025-11-17 20:29:39,660 [ERROR] [executor_v2] executor loop error: OSError('telling position disabled by next() call'); backing off 1s
+Traceback (most recent call last):
+  File "C:\Users\nolan\desktop\flashback\app\bots\executor_v2.py", line 241, in executor_loop
+    pos = f.tell()
+          ^^^^^^^^
+OSError: telling position disabled by next() call
+2025-11-17 20:29:40,660 [ERROR] [executor_v2] executor loop error: OSError('telling position disabled by next() call'); backing off 1s
+Traceback (most recent call last):
+  File "C:\Users\nolan\desktop\flashback\app\bots\executor_v2.py", line 241, in executor_loop
+    pos = f.tell()
+          ^^^^^^^^
+OSError: telling position disabled by next() call
+2025-11-17 20:29:41,677 [ERROR] [executor_v2] executor loop error: OSError('telling position disabled by next() call'); backing off 1s
+Traceback (most recent call last):
+  File "C:\Users\nolan\desktop\flashback\app\bots\executor_v2.py", line 241, in executor_loop
+    pos = f.tell()
+          ^^^^^^^^
+OSError: telling position disabled by next() call
+2025-11-17 20:29:42,708 [ERROR] [executor_v2] executor loop error: OSError('telling position disabled by next() call'); backing off 1s
+Traceback (most recent call last):
+  File "C:\Users\nolan\desktop\flashback\app\bots\executor_v2.py", line 241, in executor_loop
+    pos = f.tell()
+          ^^^^^^^^
+OSError: telling position disabled by next() call
+2025-11-17 20:29:43,723 [ERROR] [executor_v2] executor loop error: OSError('telling position disabled by next() call'); backing off 1s
+Traceback (most recent call last):
+  File "C:\Users\nolan\desktop\flashback\app\bots\executor_v2.py", line 241, in executor_loop
+    pos = f.tell()
+          ^^^^^^^^
+OSError: telling position disabled by next() call
+2025-11-17 20:29:44,723 [ERROR] [executor_v2] executor loop error: OSError('telling position disabled by next() call'); backing off 1s
+Traceback (most recent call last):
+  File "C:\Users\nolan\desktop\flashback\app\bots\executor_v2.py", line 241, in executor_loop
+    pos = f.tell()
+          ^^^^^^^^
+OSError: telling position disabled by next() call
+2025-11-17 20:29:45,738 [ERROR] [executor_v2] executor loop error: OSError('telling position disabled by next() call'); backing off 1s
+Traceback (most recent call last):
+  File "C:\Users\nolan\desktop\flashback\app\bots\executor_v2.py", line 241, in executor_loop
+    pos = f.tell()
+          ^^^^^^^^
+OSError: telling position disabled by next() call
+2025-11-17 20:29:46,753 [ERROR] [executor_v2] executor loop error: OSError('telling position disabled by next() call'); backing off 1s
+Traceback (most recent call last):
+  File "C:\Users\nolan\desktop\flashback\app\bots\executor_v2.py", line 241, in executor_loop
+    pos = f.tell()
+          ^^^^^^^^
+OSError: telling position disabled by next() call
+2025-11-17 20:29:47,754 [ERROR] [executor_v2] executor loop error: OSError('telling position disabled by next() call'); backing off 1s
+Traceback (most recent call last):
+  File "C:\Users\nolan\desktop\flashback\app\bots\executor_v2.py", line 241, in executor_loop
+    pos = f.tell()
+          ^^^^^^^^
+OSError: telling position disabled by next() call
+2025-11-17 20:29:48,756 [ERROR] [executor_v2] executor loop error: OSError('telling position disabled by next() call'); backing off 1s
+Traceback (most recent call last):
+  File "C:\Users\nolan\desktop\flashback\app\bots\executor_v2.py", line 241, in executor_loop
+    pos = f.tell()
+          ^^^^^^^^
+OSError: telling position disabled by next() call
+2025-11-17 20:29:49,524 [INFO] [executor_v2] executor_v2 stopped by user
