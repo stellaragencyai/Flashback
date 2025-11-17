@@ -19,7 +19,7 @@ Notes
 -----
 - This executor is stateless across runs except for the cursor file.
 - It does NOT contain strategy rules; those live in config/strategies.yaml
-  and core/strategy_gate.py.
+  and app/core/strategy_gate.py.
 """
 
 from __future__ import annotations
@@ -29,17 +29,17 @@ import json
 from pathlib import Path
 from typing import Dict, Any, Optional
 
-from core.config import settings
-from core.logger import get_logger, bind_context
-from core.bybit_client import Bybit
-from core.notifier_bot import tg_send
+from app.core.config import settings
+from app.core.logger import get_logger, bind_context
+from app.core.bybit_client import Bybit
+from app.core.notifier_bot import tg_send
 
 # Feature memory + AI gating + risk logic
-from core.feature_store import log_features
-from core.trade_classifier import classify as classify_trade
-from core.corr_gate import allow as corr_allow
-from core.sizing import bayesian_size, risk_capped_qty
-from core.strategy_gate import should_strategy_handle
+from app.core.feature_store import log_features
+from app.core.trade_classifier import classify as classify_trade
+from app.core.corr_gate import allow as corr_allow
+from app.core.sizing import bayesian_size, risk_capped_qty
+from app.core.strategy_gate import should_strategy_handle
 
 log = get_logger("executor_v2")
 
@@ -213,7 +213,11 @@ async def executor_loop() -> None:
             # Handle file truncation/rotation: if file shrank, reset cursor
             file_size = SIGNAL_FILE.stat().st_size
             if pos > file_size:
-                log.info("Signal file truncated (size=%s, cursor=%s). Resetting cursor to 0.", file_size, pos)
+                log.info(
+                    "Signal file truncated (size=%s, cursor=%s). Resetting cursor to 0.",
+                    file_size,
+                    pos,
+                )
                 pos = 0
                 save_cursor(pos)
 

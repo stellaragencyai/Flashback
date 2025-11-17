@@ -5,7 +5,7 @@ Flashback — Bot Supervisor (Multi-bot launcher & watchdog)
 
 What this does
 --------------
-- Starts multiple bot scripts (7 by default).
+- Starts multiple bot modules (by default: tp_sl_manager, trade_journal, executor_v2).
 - Keeps them running: if a bot crashes, it is restarted with a small backoff.
 - Logs start/stop/crash events.
 - Intended to be run on your MAIN machine or Pi as the "one thing" you start.
@@ -17,6 +17,10 @@ Important:
 How to use
 ----------
 From the project root (Flashback):
+
+    python -m app.bots.supervisor
+
+or:
 
     python app/bots/supervisor.py
 
@@ -38,8 +42,6 @@ from typing import List, Optional
 
 # ---------- Paths & logging ---------- #
 
-# Resolve project ROOT from this file:
-# <ROOT>/app/bots/supervisor.py  -> parents[2] == ROOT
 SUPERVISOR_PATH = Path(__file__).resolve()
 ROOT = SUPERVISOR_PATH.parents[2]
 
@@ -53,31 +55,30 @@ log = logging.getLogger("supervisor")
 log.info("Supervisor file: %s", SUPERVISOR_PATH)
 log.info("Project root resolved to: %s", ROOT)
 
+PYTHON = sys.executable  # use current interpreter (venv-safe)
+
 
 # ---------- Config: define your bots here ---------- #
 
 @dataclass
 class BotConfig:
     name: str
-    module: Optional[str] = None      # unused for now
-    script: Optional[str] = None      # path relative to ROOT
+    module: Optional[str] = None      # e.g. "app.bots.tp_sl_manager"
+    script: Optional[str] = None      # optional fallback, unused in normal flow
     extra_args: List[str] = field(default_factory=list)
 
 
-# NOTE:
-# - Comment out any bot you do NOT want the supervisor to run.
-# - All script paths are interpreted relative to ROOT.
+# We now prefer module form ("-m app.bots.X") so that `app.*` imports work.
 BOTS: List[BotConfig] = [
-    BotConfig(name="tp_sl_manager",   script="app/bots/tp_sl_manager.py"),
-    BotConfig(name="trade_journal",   script="app/bots/trade_journal.py"),
-    BotConfig(name="portfolio_guard", script="app/bots/portfolio_guard.py"),
-    BotConfig(name="risk_daemon",     script="app/bots/risk_daemon.py"),
-    BotConfig(name="notifier_main",   script="app/bots/notifier_main.py"),
-    BotConfig(name="executor_v2",     script="app/bots/executor_v2.py"),
-    BotConfig(name="observer",        script="app/bots/observer.py"),
+    BotConfig(name="tp_sl_manager",   module="app.bots.tp_sl_manager"),
+    BotConfig(name="trade_journal",   module="app.bots.trade_journal"),
+    BotConfig(name="executor_v2",     module="app.bots.executor_v2"),
+    # You can re-enable these once the files exist:
+    # BotConfig(name="portfolio_guard", module="app.bots.portfolio_guard"),
+    # BotConfig(name="risk_daemon",     module="app.bots.risk_daemon"),
+    # BotConfig(name="notifier_main",   module="app.bots.notifier_main"),
+    # BotConfig(name="observer",        module="app.bots.observer"),
 ]
-
-PYTHON = sys.executable  # use current interpreter (venv-safe)
 
 
 @dataclass
@@ -91,28 +92,14 @@ class BotProcess:
 
 class Supervisor:
     def __init__(self, bots: List[BotConfig]) -> None:
-        # Filter out bots whose script doesn't exist (and log it)
-        self.bots: List[BotProcess] = []
-        for b in bots:
-            if b.script:
-                script_path = ROOT / b.script
-                if not script_path.is_file():
-                    log.error(
-                        "Bot %s script not found at %s; skipping this bot.",
-                        b.name,
-                        script_path,
-                    )
-                    continue
-            self.bots.append(BotProcess(cfg=b))
-
+        self.bots: List[BotProcess] = [BotProcess(cfg=b) for b in bots]
         if not self.bots:
-            log.error("No valid bots configured. Nothing to supervise.")
+            log.error("No bots configured. Nothing to supervise.")
         else:
             log.info(
                 "Configured bots: %s",
                 ", ".join(bp.cfg.name for bp in self.bots),
             )
-
         self._stop = asyncio.Event()
 
     async def run(self) -> None:
@@ -211,14 +198,12 @@ class Supervisor:
     async def _spawn_process(self, cfg: BotConfig) -> Optional[asyncio.subprocess.Process]:
         """
         Spawn a single bot process based on its config.
-        We now use the script path form (`python app/bots/x.py`) and always start
-        from ROOT to keep imports consistent.
+        Prefer module form: `python -m app.bots.x`.
         """
-        if cfg.script:
-            cmd = [PYTHON, str(ROOT / cfg.script)] + cfg.extra_args
-        elif cfg.module:
-            # Fallback if you ever want to go back to -m style
+        if cfg.module:
             cmd = [PYTHON, "-m", cfg.module] + cfg.extra_args
+        elif cfg.script:
+            cmd = [PYTHON, str(ROOT / cfg.script)] + cfg.extra_args
         else:
             log.error("Bot %s has neither module nor script defined", cfg.name)
             return None
