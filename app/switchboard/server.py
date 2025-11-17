@@ -294,8 +294,12 @@ class Switchboard:
         Start the WebSocket server at /ws/bot.
         """
 
-        async def handler(ws: WebSocketServerProtocol, path: str) -> None:
-            # Only allow /ws/bot for now
+        async def handler(ws: WebSocketServerProtocol) -> None:
+            """
+            New-style websockets handler: only `ws` is passed.
+            Path is read from `ws.path` (for websockets >= 10.x).
+            """
+            path = getattr(ws, "path", "/")
             if path != "/ws/bot":
                 await ws.close(code=1008, reason="invalid path")
                 return
