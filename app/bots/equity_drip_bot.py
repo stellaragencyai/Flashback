@@ -36,6 +36,8 @@ from typing import Dict, List, Any
 
 import orjson
 
+from app.core.config import settings
+from app.core.logger import get_logger
 from app.core.flashback_common import (
     bybit_get,
     get_equity_usdt,
@@ -51,11 +53,14 @@ CATEGORY = "linear"
 POLL_SECONDS = 6
 PAGE_LIMIT = 200  # last N executions per poll
 
-# Root-based state path: state/drip_state.json
-ROOT_DIR = Path(__file__).resolve().parents[2]
+# Root-based state path: ROOT/state/drip_state.json
+ROOT_DIR: Path = settings.ROOT
 STATE_DIR = ROOT_DIR / "state"
 STATE_DIR.mkdir(parents=True, exist_ok=True)
 STATE_PATH = STATE_DIR / "drip_state.json"
+
+# Logger for this bot
+log = get_logger("equity_drip_bot")
 
 # Dedicated Telegram channel for drip
 # Configure "drip" channel in notifier_bot (e.g., TG_TOKEN_DRIP / TG_CHAT_DRIP in .env)
@@ -89,8 +94,8 @@ def _load_state() -> dict:
                 d.setdefault("last_exec_time_ms", 0)
                 d.setdefault("last_exec_id", "")
                 return d
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning("Drip state load failed, starting fresh: %r", e)
     return {
         "processed": {},
         "rr_index": 0,
@@ -139,6 +144,7 @@ def _effective_drip_pct() -> Decimal:
     try:
         raw = Decimal(str(DRIP_PCT))
     except (InvalidOperation, TypeError, ValueError):
+        log.warning("Invalid DRIP_PCT=%r, defaulting to 0.10", DRIP_PCT)
         raw = Decimal("0.10")
 
     if raw <= 0:
@@ -173,10 +179,12 @@ def _list_recent_executions_since(last_exec_time_ms: int) -> List[dict]:
         if not isinstance(rows, list):
             return []
     except Exception as e:
+        msg = f"[Drip] execution/list fetch error: {e}"
+        log.error(msg)
         try:
-            tg.error(f"[Drip] execution/list fetch error: {e}")
+            tg.error(msg)
         except Exception:
-            print(f"[Drip] execution/list fetch error: {e}")
+            print(msg)
         return []
 
     # Sort by execTime ascending just in case
@@ -223,41 +231,56 @@ def _is_profitable_limit_fill(row: dict) -> bool:
     return True
 
 
-def loop():
-    # Startup summary
-    eff_pct = _effective_drip_pct()
+def _notify_startup(eff_pct: Decimal, subs: List[str]) -> None:
+    """
+    Send a clear startup heartbeat so you know the bot is alive
+    when run individually or under supervisor.
+    """
+    msg = (
+        "💧 Flashback Equity Drip Bot ONLINE\n"
+        f"State file: {STATE_PATH}\n"
+        f"Poll: {POLL_SECONDS}s | CATEGORY={CATEGORY}\n"
+        f"DRIP_PCT raw={DRIP_PCT} → effective={eff_pct}\n"
+        f"Round-robin UIDs ({len(subs)}): {', '.join(subs)}"
+    )
+    log.info(msg.replace("\n", " | "))
     try:
-        tg.info(
-            "💧 Flashback Equity Drip Bot started (via supervisor, per LIMIT fill).\n"
-            f"State file: {STATE_PATH}\n"
-            f"Poll: {POLL_SECONDS}s | CATEGORY={CATEGORY}\n"
-            f"DRIP_PCT raw={DRIP_PCT} -> effective={eff_pct}"
-        )
-    except Exception:
-        print(
-            f"💧 Flashback Equity Drip Bot started. effective DRIP_PCT={eff_pct}, poll={POLL_SECONDS}s"
-        )
+        tg.info(msg)
+    except Exception as e:
+        # If Telegram wiring is broken, at least you see it in logs/console.
+        log.warning("Failed to send DRIP startup Telegram: %r", e)
+        print(msg)
 
+
+def loop() -> None:
+    eff_pct = _effective_drip_pct()
     state = _load_state()
     processed: Dict[str, bool] = state.get("processed", {})
     subs = [u.strip() for u in SUB_UIDS_ROUND_ROBIN.split(",") if u.strip()]
 
     if not subs:
+        msg = "💧 Drip disabled: no SUB_UIDS_ROUND_ROBIN configured."
+        log.warning(msg)
         try:
-            tg.warn("💧 Drip disabled: no SUB_UIDS_ROUND_ROBIN configured.")
+            tg.warn(msg)
         except Exception:
-            print("💧 Drip disabled: no SUB_UIDS_ROUND_ROBIN configured.")
+            print(msg)
         return
+
+    if eff_pct <= 0:
+        msg = "💧 Drip disabled: effective DRIP_PCT <= 0."
+        log.warning(msg)
+        try:
+            tg.warn(msg)
+        except Exception:
+            print(msg)
+        return
+
+    # Clear heartbeat so you can verify it's alive when run manually
+    _notify_startup(eff_pct, subs)
 
     last_exec_time_ms: int = int(state.get("last_exec_time_ms", 0))
     last_exec_id: str = str(state.get("last_exec_id", ""))
-
-    if eff_pct <= 0:
-        try:
-            tg.warn("💧 Drip disabled: effective DRIP_PCT <= 0.")
-        except Exception:
-            print("💧 Drip disabled: effective DRIP_PCT <= 0.")
-        return
 
     while True:
         try:
@@ -312,24 +335,25 @@ def loop():
                     try:
                         eq = get_equity_usdt()
                     except Exception as ge:
+                        msg = f"[Drip] get_equity_usdt error: {ge}"
+                        log.error(msg)
                         try:
-                            tg.error(f"[Drip] get_equity_usdt error: {ge}")
+                            tg.error(msg)
                         except Exception:
-                            print(f"[Drip] get_equity_usdt error: {ge}")
+                            print(msg)
                         continue
 
                     if (Decimal(str(eq)) - amt) < Decimal(str(MAIN_BAL_FLOOR_USD)):
                         # Respect equity floor, but log the attempt
+                        msg = (
+                            f"💧 Skipped drip {_fmt_usd(amt)} (floor {MAIN_BAL_FLOOR_USD} "
+                            f"would be violated). PnL={_fmt_usd(pnl)}"
+                        )
+                        log.info(msg)
                         try:
-                            tg.info(
-                                f"💧 Skipped drip {_fmt_usd(amt)} (floor {MAIN_BAL_FLOOR_USD} "
-                                f"would be violated). PnL={_fmt_usd(pnl)}"
-                            )
+                            tg.info(msg)
                         except Exception:
-                            print(
-                                f"💧 Skipped drip {_fmt_usd(amt)} (floor {MAIN_BAL_FLOOR_USD} "
-                                f"would be violated). PnL={_fmt_usd(pnl)}"
-                            )
+                            print(msg)
                         continue
 
                     # Select target sub by round-robin
@@ -347,6 +371,7 @@ def loop():
                         f"PnL={_fmt_usd(pnl)} -> sub UID {uid}"
                         + (f" | execPrice={exit_px}" if exit_px else "")
                     )
+                    log.info(msg)
                     try:
                         tg.info(msg)
                     except Exception:
@@ -363,10 +388,12 @@ def loop():
 
                 except Exception as row_err:
                     # Row-level errors should not kill the loop
+                    msg = f"[Drip] row error: {row_err}"
+                    log.warning(msg)
                     try:
-                        tg.error(f"[Drip] row error: {row_err}")
+                        tg.error(msg)
                     except Exception:
-                        print(f"[Drip] row error: {row_err}")
+                        print(msg)
 
             # Periodic state sync even if nothing transferred
             _save_state(
@@ -381,12 +408,15 @@ def loop():
             time.sleep(POLL_SECONDS)
 
         except Exception as e:
+            msg = f"[Drip] loop error: {e}"
+            log.error(msg)
             try:
-                tg.error(f"[Drip] loop error: {e}")
+                tg.error(msg)
             except Exception:
-                print(f"[Drip] loop error: {e}")
+                print(msg)
             time.sleep(8)
 
 
 if __name__ == "__main__":
+    log.info("Equity Drip Bot starting in standalone mode...")
     loop()

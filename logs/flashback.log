@@ -60,3 +60,7 @@ Traceback (most recent call last):
           ^^^^^^^^
 OSError: telling position disabled by next() call
 2025-11-17 20:29:49,524 [INFO] [executor_v2] executor_v2 stopped by user
+2025-11-17 20:33:22,961 [INFO] [executor_v2] executor_v2 starting at cursor=0
+2025-11-17 22:06:57,852 [INFO] [executor_v2] executor_v2 stopped by user
+2025-11-17 22:06:59,722 [INFO] [executor_v2] executor_v2 starting at cursor=186
+2025-11-17 22:07:02,091 [INFO] [executor_v2] executor_v2 stopped by user
