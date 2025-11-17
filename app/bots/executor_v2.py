@@ -19,7 +19,7 @@ Notes
 -----
 - This executor is stateless across runs except for the cursor file.
 - It does NOT contain strategy rules; those live in config/strategies.yaml
-  and core/strategy_gate.py (or app/core/strategy_gate.py).
+  and core/strategy_gate.py.
 """
 
 from __future__ import annotations
@@ -29,29 +29,17 @@ import json
 from pathlib import Path
 from typing import Dict, Any, Optional
 
-# ---------- Tolerant imports for core/app.core ---------- #
+# ---------- Core imports (single source of truth) ---------- #
 
-try:
-    from app.core.config import settings
-    from app.core.logger import get_logger, bind_context
-    from app.core.bybit_client import Bybit
-    from app.core.notifier_bot import tg_send
-    from app.core.feature_store import log_features
-    from app.core.trade_classifier import classify as classify_trade
-    from app.core.corr_gate import allow as corr_allow
-    from app.core.sizing import bayesian_size, risk_capped_qty
-    from app.core.strategy_gate import should_strategy_handle
-except ImportError:
-    # Fallback to top-level "core" package
-    from core.config import settings
-    from core.logger import get_logger, bind_context
-    from core.bybit_client import Bybit
-    from core.notifier_bot import tg_send
-    from core.feature_store import log_features
-    from core.trade_classifier import classify as classify_trade
-    from core.corr_gate import allow as corr_allow
-    from core.sizing import bayesian_size, risk_capped_qty
-    from core.strategy_gate import should_strategy_handle
+from core.config import settings
+from core.logger import get_logger, bind_context
+from core.bybit_client import Bybit
+from app.core.notifier_bot import tg_send
+from core.feature_store import log_features
+from core.trade_classifier import classify as classify_trade
+from core.corr_gate import allow as corr_allow
+from core.sizing import bayesian_size, risk_capped_qty
+from core.strategy_gate import should_strategy_handle
 
 log = get_logger("executor_v2")
 
@@ -201,7 +189,13 @@ async def execute_entry(
             qty=qty,
             orderType="Market",
         )
-        bound_log.info("LIVE entry executed: %s %s qty=%s resp=%r", symbol, side, qty, resp)
+        bound_log.info(
+            "LIVE entry executed: %s %s qty=%s resp=%r",
+            symbol,
+            side,
+            qty,
+            resp,
+        )
         try:
             tg_send(f"🚀 Entry placed [{strat}] {symbol} {side} qty={qty}")
         except Exception as e:
