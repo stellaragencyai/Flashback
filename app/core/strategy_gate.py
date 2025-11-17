@@ -235,3 +235,21 @@ def strategy_label(strategy: Dict[str, Any]) -> str:
     sub_uid = strategy.get("sub_uid_str") or strategy.get("sub_uid")
     name = strategy.get("name") or stratreg.get_sub_label(str(sub_uid))
     return f"{name} (sub {sub_uid})"
+
+def should_strategy_handle(symbol: str, timeframe: str) -> Dict[str, Dict[str, Any]]:
+    """
+    Adapter for executor_v2.
+
+    Given symbol + timeframe, return a dict:
+        {strategy_name: strategy_dict}
+
+    Strategy name is taken from:
+      - strategy["name"] if present
+      - otherwise a label from strategy_label(...)
+    """
+    matches = get_strategies_for_signal(symbol, timeframe)
+    out: Dict[str, Dict[str, Any]] = {}
+    for s in matches:
+        name = s.get("name") or strategy_label(s)
+        out[name] = s
+    return out
