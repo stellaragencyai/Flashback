@@ -24,9 +24,11 @@ Notes
 
 from __future__ import annotations
 
+import json
+import asyncio
 from decimal import Decimal
 from pathlib import Path
-from typing import Dict, Optional, Tuple, List
+from typing import Dict, Optional, Tuple, List, Any
 
 from app.core.config import settings
 from app.core.logger import get_logger, bind_context
@@ -103,7 +105,7 @@ async def process_signal_line(line: str) -> None:
         return
 
     # Find strategies that want this signal
-    strategies = should_strategy_handle(symbol, tf)
+    strategies = get_strategies_for_signal(symbol, tf)
     if not strategies:
         return
 
