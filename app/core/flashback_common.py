@@ -16,7 +16,17 @@ from dotenv import load_dotenv
 
 # NEW: notifier + subs for transfer notifications
 from app.core.notifier_bot import get_notifier
-from app.core.subs import load_subs
+
+# Optional: load_subs may not exist in all builds; provide safe fallback.
+try:
+    from app.core.subs import load_subs  # type: ignore
+except Exception:
+    def load_subs() -> List[Dict[str, Any]]:
+        """
+        Fallback stub if real load_subs is not available.
+        Returns an empty list so callers can safely iterate.
+        """
+        return []
 
 # --------- Load .env ----------
 load_dotenv()
