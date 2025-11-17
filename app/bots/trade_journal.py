@@ -1,5 +1,5 @@
 # app/bots/trade_journal.py
-# Flashback — Trade Journal (Main, v3.1 — richer metrics + trade rating + guard-aware)
+# Flashback — Trade Journal (Main, v3.2 — cleaner notifications + trade rating + guard-aware)
 #
 # What it does
 # - Streams executions with a persistent cursor so we don't miss partials.
@@ -14,7 +14,9 @@
 #       • order_link_id (for later strategy/sub mapping)
 #       • timestamps: ts_open_ms, ts_open_iso
 #       • num_adds, num_partials
-# - On partial exits: sends PnL-ish updates with remaining size.
+# - On each fill:
+#       • ENTRY / ADD -> concise “fill” notification
+#       • PARTIAL EXIT -> concise partial notification
 # - On full close (size -> 0): fetches closed PnL, composes a final trade summary,
 #   appends JSONL with:
 #       • ts_close_ms, ts_close_iso
@@ -77,7 +79,7 @@ OPEN_STATE     = Path("app/state/journal_open.json")
 
 # Journal metadata
 ACCOUNT_LABEL     = "MAIN"
-JOURNAL_VERSION   = 31  # 3.1: guard-aware + order_link_id
+JOURNAL_VERSION   = 32  # 3.2: cleaner formatting, per-fill notifier
 
 # Use dedicated journal notifier channel
 tg = get_notifier("journal")
@@ -165,6 +167,12 @@ def _fmt_dec(x: Optional[Decimal], places: int = 2) -> Optional[str]:
         return None
     q = Decimal("1").scaleb(-places)  # 10^-places
     return str(x.quantize(q, rounding=ROUND_DOWN))
+
+
+def _fmt_usd_str(x: Optional[str]) -> str:
+    if x is None:
+        return "n/a"
+    return f"{x} usd"
 
 # ---------- grid inference (fallback if TPs not yet visible) ----------
 
@@ -278,9 +286,6 @@ def _rate_trade(
       - result (WIN/LOSS/BREAKEVEN)
       - duration (ultra-short vs more "patient")
       - structural noise (adds/partials count)
-
-    This is not "holy truth", it's a heuristic score so AI & human can
-    quickly spot A+ vs trash trades.
     """
     # Base from result
     base = 5.0
@@ -323,8 +328,6 @@ def _rate_trade(
             base = 5.0
 
     # Duration adjustment
-    # < 30s: likely noise scalp -> slight penalty
-    # > 2h with positive RR: small bonus
     dur_s = duration_ms / 1000.0
     if dur_s < 30:
         base -= 0.5
@@ -353,6 +356,102 @@ def _rate_trade(
             pass
 
     return score, "; ".join(reasons)
+
+# ---------- executions stream helpers (clean notifications) ----------
+
+def _notify_new_trade(snap: dict) -> None:
+    """
+    Clean, structured notification when a new position is opened
+    (or first detected on startup).
+    """
+    symbol = snap["symbol"]
+    direction = snap.get("direction", snap.get("side", "?"))
+    entry = snap.get("entry_price")
+    size = snap.get("size")
+    lev = snap.get("leverage")
+    sl = snap.get("stop_loss")
+    rr = snap.get("avg_rr_5")
+    risk = _fmt_usd_str(snap.get("risk_usd"))
+    pot = _fmt_usd_str(snap.get("potential_reward_usd"))
+    tps = snap.get("tp_prices") or []
+
+    tps_str = ", ".join(tps[:5])
+
+    msg = (
+        f"🟢 NEW TRADE\n"
+        f"{symbol} {direction}\n"
+        f"Entry: {entry} | Size: {size} | Lev: {lev}\n"
+        f"SL: {sl} | Risk: {risk} | RR≈{rr}\n"
+        f"Potential: {pot}\n"
+        f"TPs: {tps_str}"
+    )
+    tg.trade(msg)
+
+
+def _notify_entry_fill(symbol: str, side: str, qty: Decimal, px: Decimal, pos_size: Decimal) -> None:
+    msg = (
+        f"🟢 FILL (entry/add)\n"
+        f"{symbol} {side} {qty} @ {px}\n"
+        f"Position size: {pos_size}"
+    )
+    tg.trade(msg)
+
+
+def _notify_add(symbol: str, side: str, qty: Decimal, px: Decimal, pos_size: Decimal, adds: int) -> None:
+    msg = (
+        f"➕ ADD POSITION\n"
+        f"{symbol} {side} {qty} @ {px}\n"
+        f"Size now: {pos_size} | Adds: {adds}"
+    )
+    tg.trade(msg)
+
+
+def _notify_partial(symbol: str, side: str, qty: Decimal, px: Decimal, pos_size: Decimal, partials: int) -> None:
+    msg = (
+        f"➖ PARTIAL CLOSE\n"
+        f"{symbol} {side} {qty} @ {px}\n"
+        f"Remaining size: {pos_size} | Partials: {partials}"
+    )
+    tg.trade(msg)
+
+
+def _notify_close_summary(
+    row: Dict[str, Any],
+    num_adds: int,
+    num_partials: int,
+    guard_applied: bool,
+) -> None:
+    sym = row.get("symbol", "?")
+    direction = row.get("direction", row.get("side", "?"))
+    pnl = row.get("realized_pnl")
+    rr = row.get("realized_rr")
+    dur = row.get("duration_human")
+    eq_open = row.get("equity_at_open")
+    eq_after = row.get("equity_after_close")
+    rating = row.get("rating_score")
+    result = row.get("result", "UNKNOWN")
+
+    if result == "WIN":
+        flag = "✅"
+    elif result == "LOSS":
+        flag = "❌"
+    elif result == "BREAKEVEN":
+        flag = "⚪️"
+    else:
+        flag = "❓"
+
+    guard_flag = "✅" if guard_applied else "⚠️"
+
+    msg = (
+        f"🔴 TRADE CLOSED {flag}\n"
+        f"{sym} {direction}\n"
+        f"PnL: {pnl} usd | RR: {rr}\n"
+        f"Duration: {dur}\n"
+        f"Equity: {eq_open} → {eq_after}\n"
+        f"Adds: {num_adds} | Partials: {num_partials}\n"
+        f"Rating: {rating}/10 | Guard: {guard_flag}"
+    )
+    tg.trade(msg)
 
 # ---------- executions stream ----------
 
@@ -416,7 +515,7 @@ def _closed_pnl_latest(symbol: str) -> Tuple[Optional[Decimal], Optional[Decimal
 # ---------- main loop ----------
 
 def loop():
-    tg.info("📝📒 Flashback Trade Journal v3.1 (guard-aware) started.")
+    tg.info("📝 Flashback Trade Journal v3.2 (guard-aware, clean output) started.")
     open_state: Dict[str, dict] = _load_open_state()
     cursor = _load_cursor()
 
@@ -436,7 +535,6 @@ def loop():
     for sym, p in pos_now.items():
         if sym not in open_state:
             entry = Decimal(str(p["avgPrice"]))
-
             size  = Decimal(str(p["size"]))
             side  = p["side"]
             direction = _direction_from_side(side)
@@ -477,14 +575,7 @@ def loop():
             }
             open_state[sym] = snap
             _save_open_state(open_state)
-
-            tg.trade(
-                f"🟢🚀 NEW TRADE | {sym} {direction} @ {snap['entry_price']} "
-                f"📏 size {snap['size']} | ⚙️ lev {snap.get('leverage')} "
-                f"🛡 SL {snap.get('stop_loss')} | 💰 R {snap.get('risk_usd')} usd "
-                f"📊 RR~{snap.get('avg_rr_5')} | 🎯 POT {snap.get('potential_reward_usd')} usd "
-                f"🎯 TP {', '.join(snap['tp_prices'])}"
-            )
+            _notify_new_trade(snap)
 
     _save_open_state(open_state)
 
@@ -575,17 +666,11 @@ def loop():
                             open_state[symbol] = snap
                             _save_open_state(open_state)
 
-                            tg.trade(
-                                f"🟢🚀 NEW TRADE | {symbol} {direction} @ {snap['entry_price']} "
-                                f"📏 size {snap['size']} | ⚙️ lev {snap.get('leverage')} "
-                                f"🎛 {order_type or 'order'} | 🔁 {liquidity or 'liq?'} "
-                                f"🛡 SL {snap.get('stop_loss')} | 💰 R {snap.get('risk_usd')} usd "
-                                f"📊 RR~{snap.get('avg_rr_5')} | 🎯 POT {snap.get('potential_reward_usd')} usd "
-                                f"🎯 TP {', '.join(snap['tp_prices'])}"
-                            )
+                            # Notify new trade snapshot
+                            _notify_new_trade(snap)
                         else:
-                            # No position yet (race), still emit a lightweight ADD/ENTRY
-                            tg.trade(f"🟢✨ ENTRY {symbol} {side_exec} fill {qty} @ {px}")
+                            # No position yet (race), still emit a lightweight fill
+                            _notify_entry_fill(symbol, side_exec, qty, px, pos_size)
                     else:
                         # It’s an add-on to an existing position
                         snap = open_state.get(symbol, {})
@@ -594,10 +679,7 @@ def loop():
                         open_state[symbol] = snap
                         _save_open_state(open_state)
 
-                        tg.trade(
-                            f"➕📈 ADD {symbol} {side_exec} fill {qty} @ {px} "
-                            f"| 📏 size now ≈ {pos_size} | 🔁 adds {adds}"
-                        )
+                        _notify_add(symbol, side_exec, qty, px, pos_size, adds)
 
                 # 3b) PARTIAL EXIT
                 if is_exit_partial:
@@ -607,11 +689,7 @@ def loop():
                     open_state[symbol] = snap
                     _save_open_state(open_state)
 
-                    # Remaining size from current position map is authoritative
-                    tg.trade(
-                        f"➖📉 PARTIAL EXIT {symbol} {side_exec} fill {qty} @ {px} "
-                        f"| 📏 remaining ≈ {pos_size} | ✂️ partials {partials}"
-                    )
+                    _notify_partial(symbol, side_exec, qty, px, pos_size, partials)
 
             # 4) Detect full closures via positions diff and write ledger rows
             cur_syms = set(pos_now.keys())
@@ -667,7 +745,6 @@ def loop():
                             portfolio_guard.record_pnl(pnl)  # type: ignore[arg-type]
                             guard_applied = True
                         except Exception as _e:
-                            # Log but don't kill the journal
                             tg.error(f"[Journal] Failed to update Portfolio Guard with pnl {pnl}: {_e}")
 
                     row: Dict[str, Any] = {
@@ -690,28 +767,8 @@ def loop():
                     }
                     _write_jsonl(row)
 
-                    # Pretty close summary
-                    emoji_result = "✅💰" if result == "WIN" else "❌💸" if result == "LOSS" else "⚪️😐"
-                    msg = (
-                        "{flag} CLOSE {sym} {direction} | 💵 PnL {pnl} usd "
-                        "| 📊 RR {rr} | ⏱ {dur} | 🏦 eq {eq_open}→{eq_after} "
-                        "| ➕ adds {adds} | ✂️ partials {partials} "
-                        "| ⭐ rating {rating}/10 | 🧱 guard {guard_flag}"
-                    ).format(
-                        flag=f"🔴🏁{emoji_result}",
-                        sym=sym,
-                        direction=row.get("direction", row.get("side", "?")),
-                        pnl=row.get("realized_pnl"),
-                        rr=row.get("realized_rr"),
-                        dur=row.get("duration_human"),
-                        eq_open=row.get("equity_at_open"),
-                        eq_after=row.get("equity_after_close"),
-                        adds=num_adds,
-                        partials=num_partials,
-                        rating=rating_score,
-                        guard_flag="✅" if guard_applied else "⚠️",
-                    )
-                    tg.trade(msg)
+                    # Clean, concise close summary
+                    _notify_close_summary(row, num_adds, num_partials, guard_applied)
 
                     open_state.pop(sym, None)
                     _save_open_state(open_state)
