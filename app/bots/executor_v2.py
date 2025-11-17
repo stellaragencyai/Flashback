@@ -19,7 +19,7 @@ Notes
 -----
 - This executor is stateless across runs except for the cursor file.
 - It does NOT contain strategy rules; those live in config/strategies.yaml
-  and app/core/strategy_gate.py.
+  and core/strategy_gate.py (or app/core/strategy_gate.py).
 """
 
 from __future__ import annotations
@@ -29,17 +29,29 @@ import json
 from pathlib import Path
 from typing import Dict, Any, Optional
 
-from app.core.config import settings
-from app.core.logger import get_logger, bind_context
-from app.core.bybit_client import Bybit
-from app.core.notifier_bot import tg_send
+# ---------- Tolerant imports for core/app.core ---------- #
 
-# Feature memory + AI gating + risk logic
-from app.core.feature_store import log_features
-from app.core.trade_classifier import classify as classify_trade
-from app.core.corr_gate import allow as corr_allow
-from app.core.sizing import bayesian_size, risk_capped_qty
-from app.core.strategy_gate import should_strategy_handle
+try:
+    from app.core.config import settings
+    from app.core.logger import get_logger, bind_context
+    from app.core.bybit_client import Bybit
+    from app.core.notifier_bot import tg_send
+    from app.core.feature_store import log_features
+    from app.core.trade_classifier import classify as classify_trade
+    from app.core.corr_gate import allow as corr_allow
+    from app.core.sizing import bayesian_size, risk_capped_qty
+    from app.core.strategy_gate import should_strategy_handle
+except ImportError:
+    # Fallback to top-level "core" package
+    from core.config import settings
+    from core.logger import get_logger, bind_context
+    from core.bybit_client import Bybit
+    from core.notifier_bot import tg_send
+    from core.feature_store import log_features
+    from core.trade_classifier import classify as classify_trade
+    from core.corr_gate import allow as corr_allow
+    from core.sizing import bayesian_size, risk_capped_qty
+    from core.strategy_gate import should_strategy_handle
 
 log = get_logger("executor_v2")
 
@@ -55,7 +67,7 @@ CURSOR_FILE.parent.mkdir(parents=True, exist_ok=True)
 _BYBIT_TRADE_CLIENT: Optional[Bybit] = None
 
 
-# ---------- CURSOR HELPERS ----------
+# ---------- CURSOR HELPERS ---------- #
 
 def load_cursor() -> int:
     if not CURSOR_FILE.exists():
@@ -73,7 +85,7 @@ def save_cursor(pos: int) -> None:
         log.warning("failed to save cursor %s: %r", pos, e)
 
 
-# ---------- BYBIT CLIENT HELPER ----------
+# ---------- BYBIT CLIENT HELPER ---------- #
 
 def get_trade_client() -> Bybit:
     global _BYBIT_TRADE_CLIENT
@@ -82,7 +94,7 @@ def get_trade_client() -> Bybit:
     return _BYBIT_TRADE_CLIENT
 
 
-# ---------- SIGNAL PROCESSOR ----------
+# ---------- SIGNAL PROCESSOR ---------- #
 
 async def process_signal_line(line: str) -> None:
     try:
@@ -108,7 +120,7 @@ async def process_signal_line(line: str) -> None:
             log.exception("Strategy error (%s): %r", strat_name, e)
 
 
-# ---------- STRATEGY PROCESSOR ----------
+# ---------- STRATEGY PROCESSOR ---------- #
 
 async def handle_strategy_signal(
     strat_name: str,
@@ -170,7 +182,7 @@ async def handle_strategy_signal(
         bound.info("PAPER entry: %s %s qty=%s @ ~%s", symbol, side, qty, price)
 
 
-# ---------- EXECUTOR ----------
+# ---------- EXECUTOR ---------- #
 
 async def execute_entry(
     symbol: str,
@@ -198,7 +210,7 @@ async def execute_entry(
         bound_log.error("order failed for %s %s qty=%s: %r", symbol, side, qty, e)
 
 
-# ---------- MAIN LOOP ----------
+# ---------- MAIN LOOP ---------- #
 
 async def executor_loop() -> None:
     pos = load_cursor()
@@ -235,7 +247,7 @@ async def executor_loop() -> None:
             await asyncio.sleep(1.0)
 
 
-# ---------- ENTRYPOINT ----------
+# ---------- ENTRYPOINT ---------- #
 
 def main() -> None:
     try:
