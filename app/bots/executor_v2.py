@@ -31,15 +31,29 @@ from typing import Dict, Any, Optional
 
 # ---------- Core imports (single source of truth) ---------- #
 
-from core.config import settings
-from core.logger import get_logger, bind_context
-from core.bybit_client import Bybit
-from app.core.notifier_bot import tg_send
-from core.feature_store import log_features
-from core.trade_classifier import classify as classify_trade
-from core.corr_gate import allow as corr_allow
-from core.sizing import bayesian_size, risk_capped_qty
-from core.strategy_gate import should_strategy_handle
+# ---------- Tolerant imports for app.core / core ---------- #
+try:
+    from app.core.config import settings
+    from app.core.logger import get_logger, bind_context
+    from app.core.bybit_client import Bybit
+    from app.core.notifier_bot import tg_send
+    from app.core.feature_store import log_features
+    from app.core.trade_classifier import classify as classify_trade
+    from app.core.corr_gate import allow as corr_allow
+    from app.core.sizing import bayesian_size, risk_capped_qty
+    from app.core.strategy_gate import get_strategies_for_signal as should_strategy_handle
+except ImportError:
+    # Legacy / alternate layout: top-level `core` package
+    from core.config import settings  # type: ignore
+    from core.logger import get_logger, bind_context  # type: ignore
+    from core.bybit_client import Bybit  # type: ignore
+    from core.notifier_bot import tg_send  # type: ignore
+    from core.feature_store import log_features  # type: ignore
+    from core.trade_classifier import classify as classify_trade  # type: ignore
+    from core.corr_gate import allow as corr_allow  # type: ignore
+    from core.sizing import bayesian_size, risk_capped_qty  # type: ignore
+    from core.strategy_gate import get_strategies_for_signal as should_strategy_handle  # type: ignore
+
 
 
 
