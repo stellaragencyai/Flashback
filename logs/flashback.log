@@ -76,3 +76,6 @@ OSError: telling position disabled by next() call
 2025-11-17 23:01:55,890 [INFO] [executor_v2] executor_v2 starting at cursor=186
 2025-11-17 23:01:55,874 [INFO] [equity_drip_bot] 💧 Flashback Equity Drip Bot ONLINE | State file: C:\Users\nolan\Desktop\Flashback\state\drip_state.json | Poll: 6s | CATEGORY=linear | DRIP_PCT raw=0.15 → effective=0.15 | Round-robin UIDs (10): 524630315, 524633243, 524634622, 524636309, 524637467, 524638768, 524649709, 524650929, 524693375, 524700541
 2025-11-17 23:09:25,037 [INFO] [executor_v2] executor_v2 stopped by user
+2025-11-17 23:09:32,391 [INFO] [equity_drip_bot] Equity Drip Bot starting in standalone mode...
+2025-11-17 23:09:32,400 [INFO] [equity_drip_bot] 💧 Flashback Equity Drip Bot ONLINE | State file: C:\Users\nolan\Desktop\Flashback\state\drip_state.json | Poll: 6s | CATEGORY=linear | DRIP_PCT raw=0.15 → effective=0.15 | Round-robin UIDs (10): 524630315, 524633243, 524634622, 524636309, 524637467, 524638768, 524649709, 524650929, 524693375, 524700541
+2025-11-17 23:09:32,421 [INFO] [executor_v2] executor_v2 starting at cursor=186

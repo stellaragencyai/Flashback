@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Flashback — Supervisor v4.5 (Root-aware + Subaccount Status + Central + Optional Sub-bot Pings)
+# Flashback — Supervisor v4.6 (Root-aware + Subaccount Status + Central + Optional Sub-bot Pings)
 #
 # What this does:
 # - Forces project root as working directory so imports and .env are consistent.
@@ -65,7 +65,7 @@ except Exception:  # noqa: BLE001
     load_subs = None   # type: ignore[assignment]
     send_tg_to_sub = None  # type: ignore[assignment]
 
-SUPERVISOR_VERSION = "4.5"
+SUPERVISOR_VERSION = "4.6"
 
 # ---------- PATHS & ENV ----------
 
@@ -387,8 +387,9 @@ def notify_sub_bots_online() -> None:
 # ---------- BOT LIST ----------
 
 # app/bots/supervisor.py → BOTS list
-# Current core set: TP/SL, journal, executor_v2, equity drip
+# Current core set: WS switchboard, TP/SL, journal, executor_v2, equity drip
 BOTS: List[str] = [
+    "app.bots.ws_switchboard",   # WS hub: multi-account private streams
     "app.bots.tp_sl_manager",
     "app.bots.trade_journal",
     "app.bots.executor_v2",
@@ -407,6 +408,7 @@ def start(mod: str) -> subprocess.Popen:
     log_path = log_dir / f"{mod.replace('.', '_')}.log"
 
     print(f"[START] {mod}")
+    # Comment this out if Telegram startup spam annoys you
     send_tg(f"✅ Bot started: {mod.split('.')[-1]} is now running.")
 
     # Use ROOT_DIR as the working directory so imports and paths are stable
