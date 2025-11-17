@@ -410,3 +410,31 @@ def _startup_summary() -> None:
 
 
 _startup_summary()
+
+def tg_send(
+    msg: str,
+    level: str = "info",
+    channel: str = "main",
+) -> None:
+    """
+    Backwards-compatible convenience wrapper used by older bots.
+
+    - channel: which notifier to use ("main", "journal", "flashback01", etc.)
+    - level:   "info" | "error" | "trade"
+    """
+    try:
+        notifier = get_notifier(channel)
+    except Exception:
+        # Fallback: try main channel if anything goes weird
+        try:
+            notifier = get_notifier("main")
+        except Exception:
+            return
+
+    level = (level or "info").lower().strip()
+    if level == "error":
+        notifier.error(msg)
+    elif level == "trade":
+        notifier.trade(msg)
+    else:
+        notifier.info(msg)
