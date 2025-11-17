@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Flashback — Supervisor v4.3 (Root-aware + Subaccount Status + Central + Sub-bot Online Pings)
+# Flashback — Supervisor v4.4 (Root-aware + Subaccount Status + Central + Sub-bot Online Pings)
 #
 # What this does:
 # - Forces project root as working directory so imports and .env are consistent.
@@ -58,13 +58,13 @@ from dotenv import load_dotenv
 from app.core.notifier_bot import get_notifier
 from app.core.subs import load_subs, send_tg_to_sub
 
-SUPERVISOR_VERSION = "4.3"
+SUPERVISOR_VERSION = "4.4"
 
 # ---------- PATHS & ENV ----------
 
-# This file is expected at: project_root/app/tools/supervisor.py
+# This file is expected at: project_root/app/bots/supervisor.py
 THIS_FILE = Path(__file__).resolve()
-TOOLS_DIR = THIS_FILE.parent          # .../app/tools
+TOOLS_DIR = THIS_FILE.parent          # .../app/bots
 APP_DIR = TOOLS_DIR.parent            # .../app
 ROOT_DIR = APP_DIR.parent             # project_root
 
@@ -374,18 +374,13 @@ def notify_sub_bots_online() -> None:
 
 # ---------- BOT LIST ----------
 
-# app/tools/supervisor.py → BOTS list
+# app/bots/supervisor.py → BOTS list
+# Current core set: TP/SL, journal, executor_v2, equity drip
 BOTS: List[str] = [
-    "app.bots.breaker_watch",
-    "app.bots.tier_enforcer",
-    "app.bots.risk_guardian",
-    "app.bots.signal_engine",   # emits signals → signals/observed.jsonl
-    "app.bots.executor",        # consumes signals + logs features
     "app.bots.tp_sl_manager",
     "app.bots.trade_journal",
-    "app.bots.volatility_scout",
-    "app.bots.profit_sweeper",
-    "app.bots.per_position_drip",
+    "app.bots.executor_v2",
+    "app.bots.equity_drip_bot",
 ]
 
 procs: Dict[str, subprocess.Popen] = {}

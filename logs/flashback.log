@@ -66,3 +66,7 @@ OSError: telling position disabled by next() call
 2025-11-17 22:07:02,091 [INFO] [executor_v2] executor_v2 stopped by user
 2025-11-17 22:07:05,993 [INFO] [executor_v2] executor_v2 starting at cursor=186
 2025-11-17 22:51:44,844 [INFO] [executor_v2] executor_v2 stopped by user
+2025-11-17 22:51:47,262 [INFO] [executor_v2] executor_v2 starting at cursor=186
+2025-11-17 22:55:59,422 [INFO] [executor_v2] executor_v2 stopped by user
+2025-11-17 22:56:01,601 [INFO] [executor_v2] executor_v2 starting at cursor=186
+2025-11-17 22:57:28,046 [INFO] [executor_v2] executor_v2 stopped by user
