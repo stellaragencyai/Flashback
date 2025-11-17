@@ -126,3 +126,33 @@ def log_trade_open(
     except Exception:
         # Silent failure: feature logging must NEVER break trading.
         pass
+
+
+# ----------------------------------------------------------------------
+# Backward-compat shim for older code expecting `log_features(...)`
+# ----------------------------------------------------------------------
+
+def log_features(*, sub_uid: str, strategy: str, strategy_id: Optional[str],
+                 symbol: str, side: str, mode: str,
+                 equity_usd: Decimal, risk_usd: Decimal, risk_pct: Decimal,
+                 ai_score: float, ai_reason: str,
+                 features: Dict[str, Any], signal: Dict[str, Any]) -> None:
+    """
+    Back-compat wrapper so older executor code importing `log_features`
+    still works. Internally delegates to `log_trade_open`.
+    """
+    return log_trade_open(
+        sub_uid=sub_uid,
+        strategy=strategy,
+        strategy_id=strategy_id,
+        symbol=symbol,
+        side=side,
+        mode=mode,
+        equity_usd=equity_usd,
+        risk_usd=risk_usd,
+        risk_pct=risk_pct,
+        ai_score=ai_score,
+        ai_reason=ai_reason,
+        features=features,
+        signal=signal,
+    )
