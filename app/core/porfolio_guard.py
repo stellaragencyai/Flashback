@@ -11,26 +11,26 @@ Single source of truth for:
   - Daily loss limits (absolute + %)
   - Global breaker state (ON/OFF + reason)
 
-This module wraps the guard_state helpers provided by app.core.db:
+This module wraps the guard_state helpers provided by core.db / app.core.db:
   - guard_load() -> Dict[str, Any]
   - guard_update_pnl(delta_realized_usd: Decimal, delta_unrealized_usd: Decimal = 0) -> None
   - guard_reset_day(equity_now_usd: Decimal) -> None
 
 Bots that should call this:
   - Executor:
-      • Before opening *any* new trade, call can_open_trade(...)
+      • Before opening *any* new trade, call can_open_trade(...).
   - Risk / PnL trackers:
-      • When fills occur, call record_pnl(...)
+      • When fills occur, call record_pnl(...).
   - Higher level controllers:
-      • May call trip_breaker(...) / clear_breaker(...)
+      • May call trip_breaker(...) / clear_breaker(...).
 
 Env / config knobs
 ------------------
-PG_MAX_DAILY_LOSS_PCT    (float, default 3.0)   -> Max % loss from daily anchor
-PG_MAX_DAILY_LOSS_USD    (float, default 0.0)   -> Absolute loss cap (0 = disabled)
-PG_MAX_RISK_PER_TRADE_PCT(float, default 0.75)  -> Max % of *equity_now* risk per trade
-PG_MAX_RISK_PER_TRADE_USD(float, default 0.0)   -> Absolute per-trade risk cap (0 = disabled)
-PG_NOTIFY_BREAKER        (bool, default true)   -> Telegram notifications on trips
+PG_MAX_DAILY_LOSS_PCT     (float, default 3.0)   -> Max % loss from daily anchor
+PG_MAX_DAILY_LOSS_USD     (float, default 0.0)   -> Absolute loss cap (0 = disabled)
+PG_MAX_RISK_PER_TRADE_PCT (float, default 0.75)  -> Max % of *equity_now* risk per trade
+PG_MAX_RISK_PER_TRADE_USD (float, default 0.0)   -> Absolute per-trade risk cap (0 = disabled)
+PG_NOTIFY_BREAKER         (bool, default true)   -> Telegram notifications on trips
 """
 
 from __future__ import annotations
@@ -40,25 +40,39 @@ import datetime as _dt
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, Tuple, Optional
 
-# DB guard state helpers
+# --------------------------------------------------------------------------
+# DB guard state helpers (tolerant imports)
+# --------------------------------------------------------------------------
+
 try:
-    from app.core.db import guard_load, guard_update_pnl, guard_reset_day
+    # Preferred: top-level core package
+    from core.db import guard_load, guard_update_pnl, guard_reset_day  # type: ignore
 except Exception:
-    # fallback casing (just in case you did that thing again)
-    from app.Core.db import guard_load, guard_update_pnl, guard_reset_day  # type: ignore
+    try:
+        # Fallback: app.core package
+        from app.core.db import guard_load, guard_update_pnl, guard_reset_day  # type: ignore
+    except Exception as e:  # pragma: no cover
+        # If this fails, your DB wiring is broken. Let it raise.
+        raise ImportError("Portfolio Guard cannot import DB guard helpers") from e
 
-# Telegram notifier
+# --------------------------------------------------------------------------
+# Telegram notifier (tolerant)
+# --------------------------------------------------------------------------
+
 try:
-    from app.core.flashback_common import send_tg
+    from core.flashback_common import send_tg  # type: ignore
 except Exception:
-    # very last resort: no-op if import fails
-    def send_tg(msg: str) -> None:  # type: ignore
-        return
+    try:
+        from app.core.flashback_common import send_tg  # type: ignore
+    except Exception:
+        # Very last resort: no-op if import fails
+        def send_tg(msg: str) -> None:  # type: ignore
+            return
 
 
-# -----------------------------------------------------------------------------
+# --------------------------------------------------------------------------
 # Config
-# -----------------------------------------------------------------------------
+# --------------------------------------------------------------------------
 
 def _to_decimal(val: str, default: Decimal) -> Decimal:
     try:
@@ -85,13 +99,13 @@ class GuardConfig:
         # Per-trade risk cap (% of current equity)
         self.max_risk_per_trade_pct: Decimal = _env_decimal(
             "PG_MAX_RISK_PER_TRADE_PCT",
-            "0.75"
+            "0.75",
         )
 
         # Per-trade absolute risk cap (0 => disabled)
         self.max_risk_per_trade_usd: Decimal = _env_decimal(
             "PG_MAX_RISK_PER_TRADE_USD",
-            "0.0"
+            "0.0",
         )
 
         # Notify on breaker trips
@@ -103,15 +117,15 @@ class GuardConfig:
 _CFG = GuardConfig()
 
 
-# -----------------------------------------------------------------------------
+# --------------------------------------------------------------------------
 # State helpers
-# -----------------------------------------------------------------------------
+# --------------------------------------------------------------------------
 
 def _normalize_state(raw: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """
     Normalize guard_state row into a stable dict with sane defaults.
 
-    Expected DB shape (app/core/db.py):
+    Expected DB shape (core/db.py):
       {
         "session_date": "YYYY-MM-DD",
         "session_start_equity": <Decimal/str>,
@@ -198,9 +212,9 @@ def record_pnl(delta_realized_usd: Decimal,
     guard_update_pnl(delta_realized_usd, delta_unrealized_usd)
 
 
-# -----------------------------------------------------------------------------
+# --------------------------------------------------------------------------
 # Breaker controls
-# -----------------------------------------------------------------------------
+# --------------------------------------------------------------------------
 
 def _notify_breaker(msg: str) -> None:
     if not _CFG.notify_breaker:
@@ -209,6 +223,21 @@ def _notify_breaker(msg: str) -> None:
         send_tg(f"🛑 Portfolio Breaker | {msg}")
     except Exception:
         # No one needs to die over a Telegram outage.
+        pass
+
+
+def _maybe_guard_set_breaker(on: bool, reason: str) -> None:
+    """
+    Try to persist breaker flag if DB helper exists. Safe fallback if not.
+    """
+    try:
+        try:
+            from core.db import guard_set_breaker  # type: ignore
+        except Exception:
+            from app.core.db import guard_set_breaker  # type: ignore
+        guard_set_breaker(on, reason)
+    except Exception:
+        # If guard_set_breaker doesn't exist yet, skip silently.
         pass
 
 
@@ -226,9 +255,6 @@ def trip_breaker(reason: str,
         # Already tripped; no need to spam notifications.
         return
 
-    # Ideally guard_update_pnl / guard_reset_day handles writing breaker state.
-    # In practice we may need a dedicated DB helper later. For now, we simply
-    # send notifications and rely on executor honoring the state it reads.
     msg = reason
     if meta:
         # Add a compact meta summary if present.
@@ -236,17 +262,7 @@ def trip_breaker(reason: str,
         msg = f"{reason} ({details})"
 
     _notify_breaker(msg)
-
-    # If your DB layer doesn't persist breaker_on/breaker_reason yet,
-    # you'll want to extend guard_update_pnl or add a guard_set_breaker(...)
-    # helper. For now we just log loudly and let higher-level code handle
-    # persistence.
-    try:
-        from app.core.db import guard_set_breaker  # type: ignore
-        guard_set_breaker(True, reason)
-    except Exception:
-        # If guard_set_breaker doesn't exist yet, you can add it later.
-        pass
+    _maybe_guard_set_breaker(True, reason)
 
 
 def clear_breaker(reason: Optional[str] = None) -> None:
@@ -263,17 +279,12 @@ def clear_breaker(reason: Optional[str] = None) -> None:
 
     why = reason or "Manual reset"
     _notify_breaker(f"Breaker cleared: {why}")
-
-    try:
-        from app.core.db import guard_set_breaker  # type: ignore
-        guard_set_breaker(False, why)
-    except Exception:
-        pass
+    _maybe_guard_set_breaker(False, why)
 
 
-# -----------------------------------------------------------------------------
+# --------------------------------------------------------------------------
 # Risk checks
-# -----------------------------------------------------------------------------
+# --------------------------------------------------------------------------
 
 def _compute_equity(state: Dict[str, Any],
                     equity_now_usd: Decimal) -> Tuple[Decimal, Decimal, Decimal]:
@@ -377,18 +388,6 @@ def can_open_trade(sub_uid: str,
       2) If breaker_on: block any new trades.
       3) Check daily loss limits (anchor vs current).
       4) Check per-trade risk limits.
-
-    Example usage in executor:
-      allowed, reason = portfolio_guard.can_open_trade(
-          sub_uid=signal.sub_uid,
-          strategy_name=strategy.name,
-          risk_usd=risk_usd,
-          equity_now_usd=equity_now,
-      )
-      if not allowed:
-          log.warning("Blocked by portfolio guard: %s", reason)
-          tg_send(f"❌ Trade blocked {symbol} | {reason}")
-          return
     """
     # 1) Ensure session state for today
     state = ensure_today(equity_now_usd)
