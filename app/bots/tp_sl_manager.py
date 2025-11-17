@@ -184,11 +184,13 @@ def _compute_exit_grid(symbol: str, side_now: str, entry: Decimal) -> Tuple[Deci
 
     Spacing logic:
       - Base R = max(ATR * ATR_MULT, R_MIN_TICKS * tick)
+      - SL distance = 2.2 * R (further from entry vs default)
       - tpi = entry ± i*R depending on side, for i in [1..CORE_TP_COUNT]
       - furthest TP capped by:
           • TP5_MAX_ATR_MULT * ATR distance   (legacy name, still used as max-multiple)
           • TP5_MAX_PCT% of entry             (legacy name, still used as max % band)
-      - If cap is hit, R is compressed so that tpn - entry == max_tp_dist.
+      - If cap is hit, R is compressed so that tpn - entry == max_tp_dist (SL still uses
+        original R * 2.2 for more breathing room).
     """
     tick, _step, _min_notional = get_ticks(symbol)
 
@@ -205,19 +207,29 @@ def _compute_exit_grid(symbol: str, side_now: str, entry: Decimal) -> Tuple[Deci
     if R < min_R:
         R = min_R
 
+    # Store original R for SL so SL stays 2.2x that distance,
+    # even if we compress R later for TP cap logic.
+    R_for_sl = R
+
     # Cap furthest TP
     max_tp_dist_atr = atr * Decimal(TP5_MAX_ATR_MULT)
     max_tp_dist_pct = entry * (Decimal(TP5_MAX_PCT) / Decimal(100))
     max_tp_dist = min(max_tp_dist_atr, max_tp_dist_pct)
 
     if side_now.lower() == "buy":
-        sl = entry - R
+        # Stop loss 2.2x farther away
+        sl_distance = R_for_sl * Decimal("2.2")
+        sl = entry - sl_distance
+
         tps = [entry + i * R for i in range(1, CORE_TP_COUNT + 1)]
         if (tps[-1] - entry) > max_tp_dist:
             R = max_tp_dist / Decimal(CORE_TP_COUNT)
             tps = [entry + i * R for i in range(1, CORE_TP_COUNT + 1)]
     else:
-        sl = entry + R
+        # Stop loss 2.2x farther away
+        sl_distance = R_for_sl * Decimal("2.2")
+        sl = entry + sl_distance
+
         tps = [entry - i * R for i in range(1, CORE_TP_COUNT + 1)]
         if (entry - tps[-1]) > max_tp_dist:
             R = max_tp_dist / Decimal(CORE_TP_COUNT)
