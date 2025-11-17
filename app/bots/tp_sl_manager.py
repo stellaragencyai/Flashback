@@ -1,7 +1,7 @@
 # app/bots/tp_sl_manager.py
-# Flashback — TP/SL Manager v5
+# Flashback — TP/SL Manager v6
 #
-# Key upgrades (v5):
+# Key upgrades (v6):
 # - 7-TP ladder support (strategy-aware exit profiles).
 # - Strategy-aware exit behavior:
 #     • Attempts to look up per-subaccount strategy from config/strategies.yaml.
@@ -9,13 +9,21 @@
 # - Trailing SL:
 #     • Base SL still comes from ATR/R logic.
 #     • SL is trailed off best favorable price using R-based distance.
+# - SL distance widened:
+#     • SL now uses a separate multiplier (SL_R_MULT, default 2.2x) so stops
+#       are significantly further from entry than TP spacing.
+# - Manual SL override:
+#     • If the exchange stop-loss is moved far away from our computed SL,
+#       we enter "manual SL mode" for that symbol.
+#     • In manual SL mode we DO NOT call set_stop_loss again, so your manual SL
+#       is respected until flat.
 # - Still:
 #     • Uses Bybit V5 PRIVATE WEBSOCKET for near-instant position updates (optional).
 #     • NEVER nukes the whole TP ladder on size change (amend-in-place).
-#     • Keeps SL attached via trading-stop helper.
+#     • Keeps SL attached via trading-stop helper (unless manual override).
 #     • ATR caching to avoid hammering indicators.
 #
-# New behavior (v4 recap + v5):
+# New behavior (v4/v5 recap + v6):
 #   1) "No TP" watchdog:
 #      - On every cycle, for every open position, we inspect open orders.
 #      - If ALL TP orders have been canceled, we IMMEDIATELY rebuild the TP ladder
@@ -32,7 +40,13 @@
 #           • Position is closed, or
 #           • All TPs are canceled and we rebuild from scratch.
 #
-#   3) Exit profiles (v5, strategy-aware):
+#   3) Manual SL override (v6):
+#      - If there's an existing stopLoss on the position that deviates by more
+#        than ~2 ticks from our computed base SL, we assume you manually moved it.
+#      - We then enter manual SL mode and DO NOT call set_stop_loss for that
+#        symbol anymore until the position is flat.
+#
+#   4) Exit profiles (strategy-aware):
 #      - Each strategy in config/strategies.yaml may define an exit_profile, e.g.:
 #           exit_profile:
 #             name: standard_7
@@ -46,6 +60,7 @@
 #     TPM_ATR_CACHE_SEC=60
 #     TPM_RESPECT_MANUAL_TPS=true|false   (default true)
 #     TPM_TRAIL_R_MULT=1.0        (R-multiple used for trailing distance)
+#     TPM_SL_R_MULT=2.2           (R-multiple used ONLY for SL distance from entry)
 #
 #   ATR_MULT, TP5_MAX_ATR_MULT, TP5_MAX_PCT, R_MIN_TICKS come from flashback_common or defaults.
 #   Note: TP5_* names are kept for backward compatibility; they still cap the *furthest* TP
@@ -118,12 +133,18 @@ _RESPECT_MANUAL_TPS = os.getenv("TPM_RESPECT_MANUAL_TPS", "true").strip().lower(
 # Trailing SL config
 _TRAIL_R_MULT = Decimal(os.getenv("TPM_TRAIL_R_MULT", "1.0"))
 
+# SL distance multiplier (relative to base R)
+SL_R_MULT = Decimal(os.getenv("TPM_SL_R_MULT", "2.2"))
+
 # ATR cache: symbol -> (ts, atr)
 _ATR_CACHE_TTL = int(os.getenv("TPM_ATR_CACHE_SEC", "60"))
 _ATR_CACHE: Dict[str, Tuple[float, Decimal]] = {}
 
 # Manual TP override per symbol: if True, we do NOT amend TP prices for that symbol.
 _MANUAL_TP_MODE: Dict[str, bool] = {}
+
+# Manual SL override per symbol: if True, we do NOT call set_stop_loss for that symbol.
+_MANUAL_SL_MODE: Dict[str, bool] = {}
 
 # Trailing SL state per symbol:
 #   symbol -> {
@@ -183,14 +204,14 @@ def _compute_exit_grid(symbol: str, side_now: str, entry: Decimal) -> Tuple[Deci
     Returns (stop_loss_price, [tp1..tpN]) snapped to valid tick.
 
     Spacing logic:
-      - Base R = max(ATR * ATR_MULT, R_MIN_TICKS * tick)
-      - SL distance = 2.2 * R (further from entry vs default)
-      - tpi = entry ± i*R depending on side, for i in [1..CORE_TP_COUNT]
+      - Base R_base = max(ATR * ATR_MULT, R_MIN_TICKS * tick)
+      - SL distance uses R_sl = R_base * SL_R_MULT  (wider stop)
+      - TP spacing uses R_tp = R_base               (tighter rungs)
+      - tpi = entry ± i*R_tp depending on side, for i in [1..CORE_TP_COUNT]
       - furthest TP capped by:
           • TP5_MAX_ATR_MULT * ATR distance   (legacy name, still used as max-multiple)
           • TP5_MAX_PCT% of entry             (legacy name, still used as max % band)
-      - If cap is hit, R is compressed so that tpn - entry == max_tp_dist (SL still uses
-        original R * 2.2 for more breathing room).
+      - If cap is hit, R_tp is compressed so that tpn - entry == max_tp_dist.
     """
     tick, _step, _min_notional = get_ticks(symbol)
 
@@ -200,16 +221,16 @@ def _compute_exit_grid(symbol: str, side_now: str, entry: Decimal) -> Tuple[Deci
         atr = entry * Decimal("0.002")
 
     # Base R distance
-    R = atr * Decimal(ATR_MULT)
+    R_base = atr * Decimal(ATR_MULT)
 
     # Enforce minimum ticks
     min_R = tick * Decimal(R_MIN_TICKS)
-    if R < min_R:
-        R = min_R
+    if R_base < min_R:
+        R_base = min_R
 
-    # Store original R for SL so SL stays 2.2x that distance,
-    # even if we compress R later for TP cap logic.
-    R_for_sl = R
+    # Separate distances for TP vs SL
+    R_tp = R_base
+    R_sl = R_base * SL_R_MULT
 
     # Cap furthest TP
     max_tp_dist_atr = atr * Decimal(TP5_MAX_ATR_MULT)
@@ -217,23 +238,17 @@ def _compute_exit_grid(symbol: str, side_now: str, entry: Decimal) -> Tuple[Deci
     max_tp_dist = min(max_tp_dist_atr, max_tp_dist_pct)
 
     if side_now.lower() == "buy":
-        # Stop loss 2.2x farther away
-        sl_distance = R_for_sl * Decimal("2.2")
-        sl = entry - sl_distance
-
-        tps = [entry + i * R for i in range(1, CORE_TP_COUNT + 1)]
+        sl = entry - R_sl
+        tps = [entry + i * R_tp for i in range(1, CORE_TP_COUNT + 1)]
         if (tps[-1] - entry) > max_tp_dist:
-            R = max_tp_dist / Decimal(CORE_TP_COUNT)
-            tps = [entry + i * R for i in range(1, CORE_TP_COUNT + 1)]
+            R_tp = max_tp_dist / Decimal(CORE_TP_COUNT)
+            tps = [entry + i * R_tp for i in range(1, CORE_TP_COUNT + 1)]
     else:
-        # Stop loss 2.2x farther away
-        sl_distance = R_for_sl * Decimal("2.2")
-        sl = entry + sl_distance
-
-        tps = [entry - i * R for i in range(1, CORE_TP_COUNT + 1)]
+        sl = entry + R_sl
+        tps = [entry - i * R_tp for i in range(1, CORE_TP_COUNT + 1)]
         if (entry - tps[-1]) > max_tp_dist:
-            R = max_tp_dist / Decimal(CORE_TP_COUNT)
-            tps = [entry - i * R for i in range(1, CORE_TP_COUNT + 1)]
+            R_tp = max_tp_dist / Decimal(CORE_TP_COUNT)
+            tps = [entry - i * R_tp for i in range(1, CORE_TP_COUNT + 1)]
 
     # Snap to tick
     sl = psnap(sl, tick)
@@ -574,6 +589,26 @@ def _sync_tp_ladder(symbol: str,
     #    having the book empty. Manual extra TPs are your problem.
 
 
+def _extract_existing_sl(p: dict) -> Optional[Decimal]:
+    """
+    Best-effort extraction of the current stop-loss price from a position dict.
+
+    Tries common Bybit field names.
+    """
+    raw = (
+        p.get("stopLoss")
+        or p.get("stopLossPrice")
+        or p.get("slPrice")
+        or p.get("stop_loss")
+    )
+    if raw in (None, "", "0", 0):
+        return None
+    try:
+        return Decimal(str(raw))
+    except Exception:
+        return None
+
+
 def _ensure_exits_for_position(p: dict,
                                seen_state: Dict[str, Tuple[Decimal, Decimal]]) -> None:
     """
@@ -587,6 +622,8 @@ def _ensure_exits_for_position(p: dict,
       - Exit behavior is now strategy-aware:
           • Uses per-sub strategy exit_profile when possible.
           • Supports varying TP counts (up to CORE_TP_COUNT) and trailing SL toggle.
+      - Manual SL override:
+          • If the existing stopLoss is far from our base SL, we stop touching SL.
     """
     symbol = p["symbol"]
     side_now = p["side"]  # "Buy"/"Sell"
@@ -597,6 +634,7 @@ def _ensure_exits_for_position(p: dict,
         # Flat; nothing to do
         seen_state.pop(symbol, None)
         _MANUAL_TP_MODE.pop(symbol, None)
+        _MANUAL_SL_MODE.pop(symbol, None)
         _TRAIL_STATE.pop(symbol, None)
         return
 
@@ -611,20 +649,51 @@ def _ensure_exits_for_position(p: dict,
     # 1) Compute grid (base SL + full CORE_TP_COUNT ladder)
     base_sl, tps_full = _compute_exit_grid(symbol, side_now, entry)
 
-    # 2) Compute trailing SL (if enabled)
-    sl_effective = _compute_trailing_sl(
-        symbol=symbol,
-        side_now=side_now,
-        entry=entry,
-        base_sl=base_sl,
-        tps=tps_full,
-        trailing_enabled=trailing_sl,
-    )
+    # 1a) Detect / maintain manual SL override
+    tick, _step, _ = get_ticks(symbol)
+    existing_sl = _extract_existing_sl(p)
+    manual_sl_mode = _MANUAL_SL_MODE.get(symbol, False)
 
-    # 3) Attach/update SL (trading stop; Bybit handles idempotency)
-    set_stop_loss(symbol, sl_effective)
+    if existing_sl is not None:
+        # If we are NOT already in manual SL mode, see if user has moved SL
+        # far enough away from our base_sl to treat as override.
+        if not manual_sl_mode:
+            try:
+                if abs(existing_sl - base_sl) > (tick * 2):
+                    manual_sl_mode = True
+                    _MANUAL_SL_MODE[symbol] = True
+                    try:
+                        send_tg(
+                            f"✋ Manual SL override detected for {symbol}. "
+                            f"Bot will respect your SL until you flatten."
+                        )
+                    except Exception:
+                        pass
+            except Exception:
+                # If anything weird happens, don't explode; just don't mark manual.
+                pass
+    else:
+        # No existing SL; if we were in manual mode, clear it (user removed SL).
+        if manual_sl_mode:
+            _MANUAL_SL_MODE.pop(symbol, None)
+            manual_sl_mode = False
 
-    # 4) Ensure TP ladder via amend-only logic (with manual override respect)
+    # 2) Compute trailing SL (if enabled AND not in manual SL mode)
+    if manual_sl_mode and existing_sl is not None:
+        sl_effective = existing_sl
+    else:
+        sl_effective = _compute_trailing_sl(
+            symbol=symbol,
+            side_now=side_now,
+            entry=entry,
+            base_sl=base_sl,
+            tps=tps_full,
+            trailing_enabled=trailing_sl,
+        )
+        # 3) Attach/update SL (trading stop; Bybit handles idempotency)
+        set_stop_loss(symbol, sl_effective)
+
+    # 4) Ensure TP ladder via amend-only logic (with manual TP override respect)
     _sync_tp_ladder(symbol, side_now, size, tps_full, tp_count=tp_count)
 
     # 5) Notify only on state change (entry/size)
@@ -653,7 +722,7 @@ def _loop_http_poll() -> None:
     Legacy but now much safer/faster:
     - Polls positions every POLL_SECONDS
     - On every pass, for each open position, ensures:
-        • SL (now trailing-aware) is attached
+        • SL (now trailing-aware, and respects manual override) is attached
         • TP ladder exists (recreated immediately if user nuked it)
     - Uses amend-only TP logic and respects manual TP prices if enabled.
     """
@@ -675,6 +744,7 @@ def _loop_http_poll() -> None:
                 if s not in current_symbols:
                     seen.pop(s, None)
                     _MANUAL_TP_MODE.pop(s, None)
+                    _MANUAL_SL_MODE.pop(s, None)
                     _TRAIL_STATE.pop(s, None)
 
             time.sleep(POLL_SECONDS)
@@ -724,6 +794,7 @@ def _handle_ws_position_message(msg: dict,
             "side": "Buy",
             "size": "0.001",
             "avgPrice": "61234.5",
+            "stopLoss": "61200.0",
             ...
           },
           ...
@@ -753,6 +824,7 @@ def _handle_ws_position_message(msg: dict,
             # Flat now; clear state
             seen.pop(symbol, None)
             _MANUAL_TP_MODE.pop(symbol, None)
+            _MANUAL_SL_MODE.pop(symbol, None)
             _TRAIL_STATE.pop(symbol, None)
             continue
 
@@ -762,6 +834,8 @@ def _handle_ws_position_message(msg: dict,
             "side": p.get("side"),
             "avgPrice": p.get("avgPrice"),
             "size": p.get("size"),
+            # Pass through existing SL field if present
+            "stopLoss": p.get("stopLoss") or p.get("stopLossPrice") or p.get("slPrice"),
             # Pass through potential subaccount identifiers for strategy lookup
             "sub_uid": p.get("sub_uid") or p.get("subAccountId") or p.get("accountId") or p.get("subId"),
         }
@@ -772,6 +846,7 @@ def _handle_ws_position_message(msg: dict,
         if s not in current_symbols:
             seen.pop(s, None)
             _MANUAL_TP_MODE.pop(s, None)
+            _MANUAL_SL_MODE.pop(s, None)
             _TRAIL_STATE.pop(s, None)
 
 
@@ -861,6 +936,7 @@ def loop():
       - HTTP mode:
           • Polls positions every POLL_SECONDS.
           • Ensures trailing SL + strategy-aware TP ladder on every pass.
+          • Respect manual SL (if moved off our base by >2 ticks) and manual TPs.
       - WS mode:
           • Reacts to private 'position' pushes near-instantly.
           • Falls back to HTTP mode on hard WS failure.
@@ -874,7 +950,7 @@ def loop():
         try:
             _loop_ws()
         except Exception as e:
-            # Hard failure in WS mode -> fall back to HTTP polling
+                # Hard failure in WS mode -> fall back to HTTP polling
             send_tg(f"[TP/SL] WS hard failure, falling back to HTTP mode: {e}")
             _loop_http_poll()
     else:

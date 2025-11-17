@@ -1,65 +1,65 @@
 #!/usr/bin/env python3
-# app/core/corr_gate_v2.py
+# -*- coding: utf-8 -*-
+"""
+Flashback — Correlation Gate (v2 wrapper)
+
+Purpose
+-------
+Prevent the executor from stacking too many positions in highly correlated
+symbols at the same time.
+
+This module is a thin wrapper over app.core.corr_gate_v2, exposing
+a simple `allow(...)` function for the executor:
+
+    from app.core.corr_gate import allow as corr_allow
+
+    if not corr_allow(symbol):
+        # block trade
+
+API
+---
+allow(symbol: str, max_corr: float = 0.8, max_pairs: int = 1) -> bool
+    Returns True if it's OK to open a *new* position in `symbol` under the
+    current correlated exposure, otherwise False.
+"""
+
 from __future__ import annotations
 
-from decimal import Decimal
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Tuple
 
-from app.core.flashback_common import list_open_positions
+from app.core.corr_gate_v2 import (
+    set_corr,
+    get_corr,
+    correlated_exposure_too_high,
+)
 
-# Simple static correlation map. Adjust over time.
-# Values: 0.0–1.0 (1.0 = highly correlated).
-_CORR: Dict[Tuple[str, str], float] = {}
+# Re-export for configuration code if needed
+__all__ = [
+    "allow",
+    "set_corr",
+    "get_corr",
+    "correlated_exposure_too_high",
+]
 
-def _norm(sym: str) -> str:
-    return sym.upper().replace("PERP", "").replace("USDT", "")
 
-def set_corr(sym_a: str, sym_b: str, corr: float) -> None:
-    a = _norm(sym_a)
-    b = _norm(sym_b)
-    if a == b:
-        return
-    if corr < 0:
-        corr = 0.0
-    if corr > 1:
-        corr = 1.0
-    key1 = (a, b)
-    key2 = (b, a)
-    _CORR[key1] = corr
-    _CORR[key2] = corr
-
-def get_corr(sym_a: str, sym_b: str) -> float:
-    a = _norm(sym_a)
-    b = _norm(sym_b)
-    if a == b:
-        return 1.0
-    return _CORR.get((a, b), 0.0)
-
-def correlated_exposure_too_high(
-    symbol: str,
-    max_corr: float = 0.8,
-    max_pairs: int = 1,
-) -> bool:
+def allow(symbol: str, max_corr: float = 0.8, max_pairs: int = 1) -> bool:
     """
-    Return True if opening a new position in `symbol` would create
-    too much correlated exposure with existing open positions.
+    Return True if it's OK to open a new position in `symbol` given
+    existing open positions.
 
-    max_pairs: how many high-corr open mates you allow before blocking.
+    Internally uses `correlated_exposure_too_high` from corr_gate_v2.
+
+    Args:
+        symbol:     e.g. "BTCUSDT"
+        max_corr:   correlation coefficient threshold to consider "highly correlated"
+        max_pairs:  how many high-corr open mates you allow before blocking
+
+    Returns:
+        bool: True if *allowed*, False if we should block the trade.
     """
-    open_pos = list_open_positions()
-    if not open_pos:
-        return False
-
-    base = _norm(symbol)
-    hits = 0
-    for p in open_pos:
-        sym = p.get("symbol") or ""
-        size = Decimal(str(p.get("size", "0")))
-        if size <= 0:
-            continue
-        corr = get_corr(base, sym)
-        if corr >= max_corr:
-            hits += 1
-            if hits > max_pairs:
-                return True
-    return False
+    too_high = correlated_exposure_too_high(
+        symbol=symbol,
+        max_corr=max_corr,
+        max_pairs=max_pairs,
+    )
+    return not too_high

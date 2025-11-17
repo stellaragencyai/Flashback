@@ -1,71 +1,132 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Flashback — Sizing helpers (stub-friendly)
+Flashback — Sizing Helpers
 
-Provides:
-    - bayesian_size(symbol, side, price, strat_name)
-    - risk_capped_qty(symbol, raw_qty)
+Purpose
+-------
+Centralized sizing utilities used by the executor:
 
-Current behavior:
-    * bayesian_size: fixed % of equity using DEFAULT_TRADE_NOTIONAL_PCT.
-    * risk_capped_qty: snap to qtyStep and enforce at least one step.
+    from app.core.sizing import bayesian_size, risk_capped_qty
+
+These functions work in *risk terms*:
+    risk_usd = qty * stop_distance
+
+and respect symbol-specific step size via flashback_common helpers.
 """
 
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Any
+from typing import Tuple
 
-import os
-
-from app.core.flashback_common import get_equity_usdt, get_ticks
+from app.core.flashback_common import get_ticks, qdown
 
 
-def _default_notional_pct() -> Decimal:
-    raw = os.getenv("DEFAULT_TRADE_NOTIONAL_PCT", "1.0")
+def _to_decimal(x) -> Decimal:
     try:
-        return Decimal(str(raw))
+        if isinstance(x, Decimal):
+            return x
+        return Decimal(str(x))
     except Exception:
-        return Decimal("1.0")
+        return Decimal("0")
 
 
 def bayesian_size(
     symbol: str,
-    side: str,
-    price: float,
-    strat_name: str,
-) -> Decimal:
+    equity_usd: Decimal,
+    risk_pct: float,
+    stop_distance: Decimal,
+) -> Tuple[Decimal, Decimal]:
     """
-    Dumb initial sizing: fixed % of equity.
-    Replace later with your Bayesian / expectancy-based logic.
+    Basic risk-based sizing:
+
+        risk_usd = equity_usd * (risk_pct / 100)
+        qty_raw  = risk_usd / stop_distance
+        qty      = qdown(qty_raw, step)
+
+    Args:
+        symbol:         e.g. "BTCUSDT"
+        equity_usd:     current account equity in USD
+        risk_pct:       % of equity to risk (e.g. 0.25 for 0.25%)
+        stop_distance:  distance between entry and SL in price units
+
+    Returns:
+        (qty, risk_usd)
     """
-    eq = get_equity_usdt()
-    pct = _default_notional_pct()
-    if eq <= 0 or pct <= 0:
-        return Decimal("0")
+    equity = _to_decimal(equity_usd)
+    if equity <= 0:
+        return Decimal("0"), Decimal("0")
 
-    if price <= 0:
-        return Decimal("0")
+    sd = _to_decimal(stop_distance)
+    if sd <= 0:
+        return Decimal("0"), Decimal("0")
 
-    notional = eq * pct / Decimal("100")
-    qty = Decimal(notional) / Decimal(str(price))
-    return qty
+    pct = Decimal(str(risk_pct)) / Decimal("100")
+    risk_usd = equity * pct
+    if risk_usd <= 0:
+        return Decimal("0"), Decimal("0")
+
+    _tick, step, _min_notional = get_ticks(symbol)
+
+    qty_raw = risk_usd / sd
+    qty = qdown(qty_raw, step)
+
+    if qty <= 0:
+        return Decimal("0"), Decimal("0")
+
+    return qty, risk_usd
 
 
-def risk_capped_qty(symbol: str, raw_qty: Decimal) -> Decimal:
+def risk_capped_qty(
+    symbol: str,
+    qty: Decimal,
+    equity_usd: Decimal,
+    max_risk_pct: float,
+    stop_distance: Decimal,
+) -> Tuple[Decimal, Decimal]:
     """
-    Enforce min-size using instrument qtyStep and a very basic min rule.
+    Take a proposed quantity and make sure the implied risk does NOT exceed
+    max_risk_pct of equity. If it does, we shrink the qty.
+
+    Args:
+        symbol:         e.g. "BTCUSDT"
+        qty:            proposed position size (contract units / coin size)
+        equity_usd:     account equity in USD
+        max_risk_pct:   max % of equity you're willing to risk
+        stop_distance:  distance between entry and SL in price units
+
+    Returns:
+        (qty_adj, risk_usd_adj)
     """
-    if raw_qty is None or raw_qty <= 0:
-        return Decimal("0")
+    equity = _to_decimal(equity_usd)
+    q = _to_decimal(qty)
+    sd = _to_decimal(stop_distance)
 
-    tick, step, _min_notional = get_ticks(symbol)
+    if equity <= 0 or q <= 0 or sd <= 0:
+        return Decimal("0"), Decimal("0")
 
-    # Snap to step
-    snapped = (raw_qty / step).quantize(Decimal("0")) * step
+    # Current implied risk
+    implied_risk = q * sd
 
-    if snapped <= 0:
-        snapped = step
+    max_risk = equity * (Decimal(str(max_risk_pct)) / Decimal("100"))
+    if max_risk <= 0:
+        # no cap
+        return q, implied_risk
 
-    return snapped
+    if implied_risk <= max_risk:
+        # Already within cap
+        return q, implied_risk
+
+    # Need to shrink qty
+    factor = max_risk / implied_risk
+    q_new = q * factor
+
+    _tick, step, _min_notional = get_ticks(symbol)
+    q_new = qdown(q_new, step)
+
+    if q_new <= 0:
+        return Decimal("0"), Decimal("0")
+
+    risk_new = q_new * sd
+    return q_new, risk_new
