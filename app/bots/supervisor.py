@@ -16,25 +16,12 @@ Important:
 
 How to use
 ----------
-1. Adjust the BOTS list below so each entry points to a real bot.
-   Example bot scripts (you can rename/point as needed):
-     - app/bots/tp_manager.py
-     - app/bots/trade_journal.py
-     - app/bots/portfolio_guard.py
-     - app/bots/risk_daemon.py
-     - app/bots/notifier_main.py
-     - app/bots/executor_v2.py
-     - app/bots/observer.py
-
+1. Make sure the referenced bot scripts exist under app/bots/.
 2. From the project root (Flashback):
        python app/bots/supervisor.py
-   or:
-       python -m app.bots.supervisor   (if app/ and bots/ have __init__.py)
 
-3. The supervisor will:
-   - spawn each bot
-   - restart bots if they exit unexpectedly
-   - exit only when you Ctrl+C it.
+Env:
+- SUPERVISOR_LOG = INFO / DEBUG etc
 """
 
 from __future__ import annotations
@@ -63,22 +50,20 @@ log = logging.getLogger("supervisor")
 @dataclass
 class BotConfig:
     name: str
-    module: Optional[str] = None      # e.g. "app.bots.tp_manager"
-    script: Optional[str] = None      # e.g. "app/bots/tp_manager.py"
+    module: Optional[str] = None      # unused for now
+    script: Optional[str] = None      # relative script path
     extra_args: List[str] = field(default_factory=list)
 
 
-# Adjust these paths to match your actual bots.
-# For now I'm giving you 7 slots wired to common names.
-# If a module doesn't exist yet, just create the file or comment that entry out.
+# We now use SCRIPT paths instead of "-m app.bots.X" to bypass package issues.
 BOTS: List[BotConfig] = [
-    BotConfig(name="tp_manager",       module="app.bots.tp_manager"),
-    BotConfig(name="trade_journal",    module="app.bots.trade_journal"),
-    BotConfig(name="portfolio_guard",  module="app.bots.portfolio_guard"),
-    BotConfig(name="risk_daemon",      module="app.bots.risk_daemon"),
-    BotConfig(name="notifier_main",    module="app.bots.notifier_main"),
-    BotConfig(name="executor_v2",      module="app.bots.executor_v2"),  # the auto-executor I gave you earlier
-    BotConfig(name="observer",         module="app.bots.observer"),
+    BotConfig(name="tp_manager",      script="app/bots/tp_manager.py"),
+    BotConfig(name="trade_journal",   script="app/bots/trade_journal.py"),
+    BotConfig(name="portfolio_guard", script="app/bots/portfolio_guard.py"),
+    BotConfig(name="risk_daemon",     script="app/bots/risk_daemon.py"),
+    BotConfig(name="notifier_main",   script="app/bots/notifier_main.py"),
+    BotConfig(name="executor_v2",     script="app/bots/executor_v2.py"),
+    BotConfig(name="observer",        script="app/bots/observer.py"),
 ]
 
 
@@ -178,13 +163,13 @@ class Supervisor:
     async def _spawn_process(self, cfg: BotConfig) -> Optional[asyncio.subprocess.Process]:
         """
         Spawn a single bot process based on its config.
-        Prefer module form (`python -m app.bots.x`) if module is set.
-        Otherwise use script path (`python app/bots/x.py`).
+        We now use the script path form (`python app/bots/x.py`).
         """
-        if cfg.module:
-            cmd = [PYTHON, "-m", cfg.module] + cfg.extra_args
-        elif cfg.script:
+        if cfg.script:
             cmd = [PYTHON, cfg.script] + cfg.extra_args
+        elif cfg.module:
+            # Fallback if you ever want to go back to -m style
+            cmd = [PYTHON, "-m", cfg.module] + cfg.extra_args
         else:
             log.error("Bot %s has neither module nor script defined", cfg.name)
             return None
