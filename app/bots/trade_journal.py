@@ -386,17 +386,22 @@ def _notify_new_trade(snap: dict) -> None:
     risk = _fmt_usd_str(snap.get("risk_usd"))
     pot = _fmt_usd_str(snap.get("potential_reward_usd"))
     tps = snap.get("tp_prices") or []
+    order_link_id = snap.get("order_link_id")
 
     tps_str = ", ".join(tps[:5])
 
-    msg = (
-        f"🟢 NEW TRADE\n"
-        f"{symbol} {direction}\n"
-        f"Entry: {entry} | Size: {size} | Lev: {lev}\n"
-        f"SL: {sl} | Risk: {risk} | RR≈{rr}\n"
-        f"Potential: {pot}\n"
-        f"TPs: {tps_str}"
-    )
+    msg_lines = [
+        "🟢 NEW TRADE",
+        f"{symbol} {direction}",
+        f"Entry: {entry} | Size: {size} | Lev: {lev}",
+        f"SL: {sl} | Risk: {risk} | RR≈{rr}",
+        f"Potential: {pot}",
+        f"TPs: {tps_str}",
+    ]
+    if order_link_id:
+        msg_lines.append(f"LinkId: {order_link_id}")
+
+    msg = "\n".join(msg_lines)
     tg.trade(msg)
 
 
@@ -442,6 +447,7 @@ def _notify_close_summary(
     eq_after = row.get("equity_after_close")
     rating = row.get("rating_score")
     result = row.get("result", "UNKNOWN")
+    order_link_id = row.get("order_link_id")
 
     if result == "WIN":
         flag = "✅"
@@ -454,15 +460,19 @@ def _notify_close_summary(
 
     guard_flag = "✅" if guard_applied else "⚠️"
 
-    msg = (
-        f"🔴 TRADE CLOSED {flag}\n"
-        f"{sym} {direction}\n"
-        f"PnL: {pnl} usd | RR: {rr}\n"
-        f"Duration: {dur}\n"
-        f"Equity: {eq_open} → {eq_after}\n"
-        f"Adds: {num_adds} | Partials: {num_partials}\n"
-        f"Rating: {rating}/10 | Guard: {guard_flag}"
-    )
+    msg_lines = [
+        f"🔴 TRADE CLOSED {flag}",
+        f"{sym} {direction}",
+        f"PnL: {pnl} usd | RR: {rr}",
+        f"Duration: {dur}",
+        f"Equity: {eq_open} → {eq_after}",
+        f"Adds: {num_adds} | Partials: {num_partials}",
+        f"Rating: {rating}/10 | Guard: {guard_flag}",
+    ]
+    if order_link_id:
+        msg_lines.append(f"LinkId: {order_link_id}")
+
+    msg = "\n".join(msg_lines)
     tg.trade(msg)
 
 # ---------- execution classification helpers ----------
