@@ -146,13 +146,33 @@ async def handle_strategy_signal(
         bound.warning("missing required fields in signal: %r", sig)
         return
 
-    # AI Classifier Gate
-    clf = classify_trade(symbol, tf, side, price, ts)
+    # --- AI Classifier Gate ---
+    # trade_classifier.classify now expects (signal, strategy_id) -> dict
+    try:
+        clf = classify_trade(sig, strat.id)
+    except TypeError as e:
+        # In case it actually only wants 1 argument, fallback to classify(sig)
+        bound.warning(
+            "trade_classifier.classify signature mismatch (%r); retrying with single-arg.", e
+        )
+        try:
+            clf = classify_trade(sig)
+        except Exception as e2:
+            bound.error("AI classifier failed completely: %r", e2)
+            return
+    except Exception as e:
+        bound.error("AI classifier crashed: %r", e)
+        return
+
+    if not isinstance(clf, dict):
+        bound.warning("AI classifier returned non-dict: %r", clf)
+        return
+
     if not clf.get("allow"):
         bound.info("AI gate rejected: %s", clf.get("reason"))
         return
 
-    # Correlation gate (unpack (allowed, reason))
+    # --- Correlation gate (unpack (allowed, reason)) ---
     try:
         allowed_corr, corr_reason = corr_allow(symbol)
     except Exception as e:
@@ -163,13 +183,13 @@ async def handle_strategy_signal(
         bound.info("Correlation gate rejected for %s: %s", symbol, corr_reason)
         return
 
-    # Feature logging (best-effort)
+    # --- Feature logging (best-effort) ---
     try:
         log_features(symbol, sig, strat_name=strat.id)
     except Exception as e:
         bound.warning("feature logging failed: %r", e)
 
-    # Sizing (still uses your existing bayesian_size + risk_capped_qty stack)
+    # --- Sizing (still uses your existing bayesian_size + risk_capped_qty stack) ---
     try:
         raw_qty = bayesian_size(symbol, side, price, strat.id)
         qty = risk_capped_qty(symbol, raw_qty)
@@ -210,7 +230,7 @@ async def execute_entry(
 
     Uses existing Bybit client and places a linear Market order.
     """
-    # Optional: portfolio guard hook (if your can_open_trade expects other args, adapt this)
+    # Optional: portfolio guard hook
     try:
         if not can_open_trade(symbol):
             bound_log.info("Portfolio guard blocked new trade on %s", symbol)

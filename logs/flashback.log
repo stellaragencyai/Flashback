@@ -1582,3 +1582,174 @@ websockets.exceptions.ConnectionClosedError: no close frame received or sent
 2025-11-18 06:47:13,559 [INFO] [ws_switchboard] WS[main] cancelled
 2025-11-18 06:47:13,559 [INFO] [ws_switchboard] WsSwitchboard cancelled; shutting down.
 2025-11-18 06:47:13,562 [INFO] [ws_switchboard_bot] WS Switchboard Bot stopped by user
+2025-11-18 06:47:21,457 [INFO] [equity_drip_bot] Equity Drip Bot starting in standalone mode...
+2025-11-18 06:47:21,466 [INFO] [equity_drip_bot] 💧 Flashback Equity Drip Bot ONLINE | State file: C:\Users\nolan\Desktop\Flashback\state\drip_state.json | Poll: 6s | CATEGORY=linear | DRIP_PCT raw=0.15 → effective=0.15 | Mode: single-sub (DRIP_SINGLE_SUB_UID=524633243) | Target UIDs (1): 524633243
+2025-11-18 06:47:21,485 [INFO] [ws_switchboard_bot] WS Switchboard Bot starting (root=C:\Users\nolan\Desktop\Flashback, env=C:\Users\nolan\Desktop\Flashback\.env)
+2025-11-18 06:47:21,485 [INFO] [ws_switchboard_bot] Execution bus path: C:\Users\nolan\Desktop\Flashback\state\ws_executions.jsonl
+2025-11-18 06:47:21,485 [INFO] [ws_switchboard] WS[main] account added to switchboard
+2025-11-18 06:47:21,485 [INFO] [ws_switchboard_bot] Subaccount flashback01 has no WS creds; skipping.
+2025-11-18 06:47:21,485 [INFO] [ws_switchboard_bot] Subaccount flashback02 has no WS creds; skipping.
+2025-11-18 06:47:21,485 [INFO] [ws_switchboard_bot] Subaccount flashback03 has no WS creds; skipping.
+2025-11-18 06:47:21,485 [INFO] [ws_switchboard_bot] Subaccount flashback04 has no WS creds; skipping.
+2025-11-18 06:47:21,485 [INFO] [ws_switchboard_bot] Subaccount flashback05 has no WS creds; skipping.
+2025-11-18 06:47:21,485 [INFO] [ws_switchboard_bot] Subaccount flashback06 has no WS creds; skipping.
+2025-11-18 06:47:21,485 [INFO] [ws_switchboard_bot] Subaccount flashback07 has no WS creds; skipping.
+2025-11-18 06:47:21,485 [INFO] [ws_switchboard_bot] Subaccount flashback08 has no WS creds; skipping.
+2025-11-18 06:47:21,485 [INFO] [ws_switchboard_bot] Subaccount flashback09 has no WS creds; skipping.
+2025-11-18 06:47:21,485 [INFO] [ws_switchboard_bot] Subaccount flashback10 has no WS creds; skipping.
+2025-11-18 06:47:21,500 [INFO] [executor_v2] executor_v2 starting at cursor=186
+2025-11-18 06:47:22,132 [INFO] [ws_switchboard] WS[main] launching run_forever task
+2025-11-18 06:47:22,132 [INFO] [ws_switchboard] WS[main] run_forever started
+2025-11-18 06:47:22,132 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 06:47:23,466 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 06:47:23,790 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 06:47:23,791 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 06:47:24,134 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2a49pvavkf41472uvig-233w83'}
+2025-11-18 06:47:29,558 [INFO] [strategies] Loaded 10 strategies from C:\Users\nolan\Desktop\Flashback\config\strategies.yaml (version=3)
+2025-11-18 06:47:29,558 [ERROR] [executor_v2] Strategy error (Sub2_Breakout(524633243)): TypeError('classify() takes 2 positional arguments but 5 were given')
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 109, in process_signal_line
+    await handle_strategy_signal(strat, sig)
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 150, in handle_strategy_signal
+    clf = classify_trade(symbol, tf, side, price, ts)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: classify() takes 2 positional arguments but 5 were given
+2025-11-18 06:47:29,558 [ERROR] [executor_v2] Strategy error (Sub3_ScalpMajors(524634622)): TypeError('classify() takes 2 positional arguments but 5 were given')
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 109, in process_signal_line
+    await handle_strategy_signal(strat, sig)
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 150, in handle_strategy_signal
+    clf = classify_trade(symbol, tf, side, price, ts)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: classify() takes 2 positional arguments but 5 were given
+2025-11-18 06:47:29,559 [ERROR] [executor_v2] Strategy error (Sub7_Canary(524649709)): TypeError('classify() takes 2 positional arguments but 5 were given')
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 109, in process_signal_line
+    await handle_strategy_signal(strat, sig)
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 150, in handle_strategy_signal
+    clf = classify_trade(symbol, tf, side, price, ts)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: classify() takes 2 positional arguments but 5 were given
+2025-11-18 06:47:29,559 [ERROR] [executor_v2] Strategy error (Sub9_Range(524693375)): TypeError('classify() takes 2 positional arguments but 5 were given')
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 109, in process_signal_line
+    await handle_strategy_signal(strat, sig)
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 150, in handle_strategy_signal
+    clf = classify_trade(symbol, tf, side, price, ts)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: classify() takes 2 positional arguments but 5 were given
+2025-11-18 06:49:27,629 [INFO] [executor_v2] executor_v2 starting at cursor=353
+2025-11-18 06:49:33,831 [ERROR] [executor_v2] Strategy error (Sub2_Breakout(524633243)): TypeError('classify() takes 2 positional arguments but 5 were given')
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 109, in process_signal_line
+    await handle_strategy_signal(strat, sig)
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 150, in handle_strategy_signal
+    clf = classify_trade(symbol, tf, side, price, ts)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: classify() takes 2 positional arguments but 5 were given
+2025-11-18 06:49:33,831 [ERROR] [executor_v2] Strategy error (Sub3_ScalpMajors(524634622)): TypeError('classify() takes 2 positional arguments but 5 were given')
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 109, in process_signal_line
+    await handle_strategy_signal(strat, sig)
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 150, in handle_strategy_signal
+    clf = classify_trade(symbol, tf, side, price, ts)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: classify() takes 2 positional arguments but 5 were given
+2025-11-18 06:49:33,832 [ERROR] [executor_v2] Strategy error (Sub7_Canary(524649709)): TypeError('classify() takes 2 positional arguments but 5 were given')
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 109, in process_signal_line
+    await handle_strategy_signal(strat, sig)
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 150, in handle_strategy_signal
+    clf = classify_trade(symbol, tf, side, price, ts)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: classify() takes 2 positional arguments but 5 were given
+2025-11-18 06:49:33,832 [ERROR] [executor_v2] Strategy error (Sub9_Range(524693375)): TypeError('classify() takes 2 positional arguments but 5 were given')
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 109, in process_signal_line
+    await handle_strategy_signal(strat, sig)
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 150, in handle_strategy_signal
+    clf = classify_trade(symbol, tf, side, price, ts)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: classify() takes 2 positional arguments but 5 were given
+2025-11-18 06:49:33,840 [INFO] [strategies] Loaded 10 strategies from C:\Users\nolan\Desktop\Flashback\config\strategies.yaml (version=3)
+2025-11-18 06:49:33,840 [ERROR] [executor_v2] Strategy error (Sub2_Breakout(524633243)): TypeError('classify() takes 2 positional arguments but 5 were given')
+Traceback (most recent call last):
+  File "C:\Users\nolan\desktop\flashback\app\bots\executor_v2.py", line 109, in process_signal_line
+    await handle_strategy_signal(strat, sig)
+  File "C:\Users\nolan\desktop\flashback\app\bots\executor_v2.py", line 150, in handle_strategy_signal
+    clf = classify_trade(symbol, tf, side, price, ts)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: classify() takes 2 positional arguments but 5 were given
+2025-11-18 06:49:33,841 [ERROR] [executor_v2] Strategy error (Sub3_ScalpMajors(524634622)): TypeError('classify() takes 2 positional arguments but 5 were given')
+Traceback (most recent call last):
+  File "C:\Users\nolan\desktop\flashback\app\bots\executor_v2.py", line 109, in process_signal_line
+    await handle_strategy_signal(strat, sig)
+  File "C:\Users\nolan\desktop\flashback\app\bots\executor_v2.py", line 150, in handle_strategy_signal
+    clf = classify_trade(symbol, tf, side, price, ts)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: classify() takes 2 positional arguments but 5 were given
+2025-11-18 06:49:33,841 [ERROR] [executor_v2] Strategy error (Sub7_Canary(524649709)): TypeError('classify() takes 2 positional arguments but 5 were given')
+Traceback (most recent call last):
+  File "C:\Users\nolan\desktop\flashback\app\bots\executor_v2.py", line 109, in process_signal_line
+    await handle_strategy_signal(strat, sig)
+  File "C:\Users\nolan\desktop\flashback\app\bots\executor_v2.py", line 150, in handle_strategy_signal
+    clf = classify_trade(symbol, tf, side, price, ts)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: classify() takes 2 positional arguments but 5 were given
+2025-11-18 06:49:33,842 [ERROR] [executor_v2] Strategy error (Sub9_Range(524693375)): TypeError('classify() takes 2 positional arguments but 5 were given')
+Traceback (most recent call last):
+  File "C:\Users\nolan\desktop\flashback\app\bots\executor_v2.py", line 109, in process_signal_line
+    await handle_strategy_signal(strat, sig)
+  File "C:\Users\nolan\desktop\flashback\app\bots\executor_v2.py", line 150, in handle_strategy_signal
+    clf = classify_trade(symbol, tf, side, price, ts)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: classify() takes 2 positional arguments but 5 were given
+2025-11-18 06:50:03,993 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 06:50:03,996 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 06:50:07,010 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 06:50:08,372 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 06:50:08,702 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 06:50:08,702 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 06:50:09,030 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2a47vdhv25d3p16hcng-2344rn'}
+2025-11-18 06:52:10,090 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 06:52:10,091 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 06:52:13,098 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 06:52:14,436 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 06:52:14,770 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 06:52:14,770 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 06:52:15,096 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2a4a1kfnonks1scuk8g-233vv4'}
+2025-11-18 06:53:35,073 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 06:53:35,074 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 06:53:38,087 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 06:53:39,422 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 06:53:39,648 [INFO] [executor_v2] executor_v2 stopped by user
+2025-11-18 06:53:39,759 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 06:53:39,759 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 06:53:40,083 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2a49pvavkf41472uvig-234099'}
