@@ -13,8 +13,9 @@ Purpose
     • Run correlation gate.
     • Size entries using a simple % of equity per strategy.
     • Log rich feature context via feature_store.log_features for AI memory.
-    • Place live entries only for LIVE_* strategies.
-      LEARN_DRY stays paper (logged only).
+    • Place live entries only for LIVE_* strategies, tagging each order
+      with a strategy-aware orderLinkId so downstream bots can attribute
+      PnL / risk to the correct logical subaccount.
 - TP/SL handled by separate bot (tp_manager).
 
 Notes
@@ -27,6 +28,7 @@ from __future__ import annotations
 
 import json
 import asyncio
+import time
 from decimal import Decimal
 from pathlib import Path
 from typing import Dict, Optional, List, Any
@@ -83,6 +85,33 @@ def get_trade_client() -> Bybit:
     if _BYBIT_TRADE_CLIENT is None:
         _BYBIT_TRADE_CLIENT = Bybit("trade")
     return _BYBIT_TRADE_CLIENT
+
+
+# ---------- ORDER TAGGING ---------- #
+
+def build_order_link_id(strat: Strategy, symbol: str, mode: str) -> str:
+    """
+    Build a strategy-aware orderLinkId, so we can attribute trades later.
+
+    Format (<= 36 chars for Bybit safety), e.g.:
+        FBv2-S2-BTC-1731901234567
+
+    Where:
+      - "FBv2"         : Flashback v2 tag
+      - "S2"           : short strategy index or sub_uid tail
+      - "BTC"          : symbol prefix
+      - timestamp_ms   : uniqueness
+    """
+    ts = int(time.time() * 1000)
+
+    # Try to build a short strategy marker
+    sub_suffix = str(strat.sub_uid)[-3:] if strat.sub_uid else "XXX"
+    # symbol prefix (BTC from BTCUSDT)
+    sym_prefix = symbol.replace("USDT", "").replace("USDC", "")[:4]
+
+    base = f"FBv2-S{sub_suffix}-{sym_prefix}-{ts}"
+    # Hard truncate to 36 chars to fit Bybit's orderLinkId constraints
+    return base[:36]
 
 
 # ---------- SIGNAL PROCESSOR ---------- #
@@ -223,15 +252,15 @@ async def handle_strategy_signal(
         features = clf.get("features") or {}
 
         log_features(
-            sub_uid=strat.sub_uid,
+            sub_uid=str(strat.sub_uid),
             strategy=strat.role or strat.name,
             strategy_id=strat.id,
             symbol=symbol,
             side=side,
             mode=mode,
-            equity_usd=float(equity_usd),
-            risk_usd=float(notional_usd),
-            risk_pct=float(risk_pct_val),
+            equity_usd=equity_usd,
+            risk_usd=notional_usd,
+            risk_pct=risk_pct_val,
             ai_score=float(ai_score),
             ai_reason=ai_reason,
             features=features,
@@ -242,7 +271,8 @@ async def handle_strategy_signal(
 
     # LIVE vs PAPER behaviour based on strategy.automation_mode
     if strat.can_trade_live:
-        await execute_entry(symbol, side, float(qty), price, strat, bound)
+        order_link_id = build_order_link_id(strat, symbol, mode)
+        await execute_entry(symbol, side, float(qty), price, strat, mode, order_link_id, bound)
     else:
         bound.info(
             "PAPER entry (%s): %s %s qty=%s @ ~%s",
@@ -262,12 +292,16 @@ async def execute_entry(
     qty: float,
     price: float,
     strat: Strategy,
+    mode: str,
+    order_link_id: str,
     bound_log,
 ) -> None:
     """
     Place a LIVE order for a given strategy.
 
     Uses existing Bybit client and places a linear Market order.
+    Tags each order with orderLinkId so downstream bots / journaling
+    can attribute it back to (sub_uid, strategy_id).
     """
     # Optional: portfolio guard hook
     try:
@@ -288,27 +322,33 @@ async def execute_entry(
             side=side,
             qty=qty,
             orderType="Market",
+            orderLinkId=order_link_id,
         )
         bound_log.info(
-            "LIVE entry executed [%s | mode=%s]: %s %s qty=%s resp=%r",
+            "LIVE entry executed [%s | mode=%s]: %s %s qty=%s linkId=%s resp=%r",
             strat.id,
-            strat.automation_mode,
+            mode,
             symbol,
             side,
             qty,
+            order_link_id,
             resp,
         )
         try:
-            tg_send(f"🚀 Entry placed [{strat.id}] {symbol} {side} qty={qty}")
+            tg_send(
+                f"🚀 Entry placed [{strat.id}] {symbol} {side} qty={qty} "
+                f"mode={mode} linkId={order_link_id}"
+            )
         except Exception as e:
             bound_log.warning("telegram send failed: %r", e)
     except Exception as e:
         bound_log.error(
-            "order failed for [%s] %s %s qty=%s: %r",
+            "order failed for [%s] %s %s qty=%s linkId=%s: %r",
             strat.id,
             symbol,
             side,
             qty,
+            order_link_id,
             e,
         )
 
