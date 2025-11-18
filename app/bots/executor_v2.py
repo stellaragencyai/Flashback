@@ -12,7 +12,8 @@ Purpose
     • Run AI gating (trade_classifier) — soft-fail, never crash executor.
     • Run correlation gate.
     • Size entries using a simple % of equity per strategy.
-    • Log rich feature context via feature_store.log_features for AI memory.
+    • Log rich feature context via feature_store.log_features for AI memory,
+      INCLUDING order_link_id where applicable.
     • Place live entries only for LIVE_* strategies, tagging each order
       with a strategy-aware orderLinkId so downstream bots can attribute
       PnL / risk to the correct logical subaccount.
@@ -94,23 +95,20 @@ def build_order_link_id(strat: Strategy, symbol: str, mode: str) -> str:
     Build a strategy-aware orderLinkId, so we can attribute trades later.
 
     Format (<= 36 chars for Bybit safety), e.g.:
-        FBv2-S2-BTC-1731901234567
+        FBv2-S315-BTC-1731901234567
 
     Where:
       - "FBv2"         : Flashback v2 tag
-      - "S2"           : short strategy index or sub_uid tail
+      - "S315"         : last 3 digits of sub_uid
       - "BTC"          : symbol prefix
       - timestamp_ms   : uniqueness
     """
     ts = int(time.time() * 1000)
 
-    # Try to build a short strategy marker
     sub_suffix = str(strat.sub_uid)[-3:] if strat.sub_uid else "XXX"
-    # symbol prefix (BTC from BTCUSDT)
     sym_prefix = symbol.replace("USDT", "").replace("USDC", "")[:4]
 
     base = f"FBv2-S{sub_suffix}-{sym_prefix}-{ts}"
-    # Hard truncate to 36 chars to fit Bybit's orderLinkId constraints
     return base[:36]
 
 
@@ -176,7 +174,6 @@ async def handle_strategy_signal(
         return
 
     # --- AI Classifier Gate (soft-fail) ---
-    # Try to use trade_classifier.classify, but never allow it to kill the executor.
     try:
         clf = classify_trade(sig, strat.id)
         if not isinstance(clf, dict):
@@ -245,6 +242,9 @@ async def handle_strategy_signal(
         bound.info("qty <= 0 after sizing; skipping entry. notional=%s", notional_usd)
         return
 
+    # --- Build order_link_id ONCE, for both logging & live orders ---
+    order_link_id = build_order_link_id(strat, symbol, mode)
+
     # --- Feature logging for AI memory (best-effort) ---
     try:
         ai_score = clf.get("score") or clf.get("confidence") or 1.0
@@ -265,28 +265,39 @@ async def handle_strategy_signal(
             ai_reason=ai_reason,
             features=features,
             signal=sig,
+            order_link_id=order_link_id,
         )
     except Exception as e:
         bound.warning("feature logging failed: %r", e)
 
     # LIVE vs PAPER behaviour based on strategy.automation_mode
     if strat.can_trade_live:
-        order_link_id = build_order_link_id(strat, symbol, mode)
-        await execute_entry(symbol, side, float(qty), price, strat, mode, order_link_id, bound)
+        await execute_entry(
+            symbol=symbol,
+            side=side,
+            qty=float(qty),
+            price=price,
+            strat=strat,
+            mode=mode,
+            order_link_id=order_link_id,
+            bound_log=bound,
+        )
     else:
         bound.info(
-            "PAPER entry (%s): %s %s qty=%s @ ~%s",
+            "PAPER entry (%s): %s %s qty=%s @ ~%s | linkId=%s",
             mode,
             symbol,
             side,
             qty,
             price,
+            order_link_id,
         )
 
 
 # ---------- EXECUTOR ---------- #
 
 async def execute_entry(
+    *,
     symbol: str,
     side: str,
     qty: float,
