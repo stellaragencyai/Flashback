@@ -165,7 +165,7 @@ def bybit_request(
     params = params or {}
     body = body or {}
 
-    items = sorted((k, str(v)) for v in params.items())
+    items = sorted((k, str(v)) for k, v in params.items())
     query_string = "&".join(f"{k}={v}" for k, v in items)
 
     body_str = json.dumps(body) if body else ""
