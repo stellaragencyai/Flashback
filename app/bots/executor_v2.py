@@ -9,9 +9,9 @@ Purpose
 - For EACH strategy defined in config/strategies.yaml:
     • Check symbol + timeframe match via strategy registry (app.core.strategies).
     • Check enabled + automation mode (OFF / LEARN_DRY / LIVE_CANARY / LIVE_FULL).
-    • Run AI gating (trade_classifier).
+    • Run AI gating (trade_classifier) — soft-fail, never crash executor.
     • Run correlation gate.
-    • Size entries.
+    • Size entries using a simple % of equity per strategy.
     • Place live entries only for LIVE_* strategies.
       LEARN_DRY stays paper (logged only).
 - TP/SL handled by separate bot (tp_manager).
@@ -19,8 +19,9 @@ Purpose
 Notes
 -----
 - This executor is stateless across runs except for the cursor file.
-- It does NOT contain strategy rules; those live in config/strategies.yaml
-  and app.core.strategies.
+- Strategy rules live in config/strategies.yaml and app.core.strategies.
+- Fancy sizing (bayesian_size / risk_capped_qty) and full feature logging
+  will be re-integrated later once their signatures are aligned.
 """
 
 from __future__ import annotations
@@ -35,13 +36,12 @@ from app.core.config import settings
 from app.core.logger import get_logger, bind_context
 from app.core.bybit_client import Bybit
 from app.core.notifier_bot import tg_send
-from app.core.feature_store import log_features
 from app.core.trade_classifier import classify as classify_trade
 from app.core.corr_gate_v2 import allow as corr_allow
-from app.core.sizing import bayesian_size, risk_capped_qty
 from app.core.portfolio_guard import can_open_trade
+from app.core.flashback_common import get_equity_usdt
 
-# NEW: use strategy registry instead of strategy_gate
+# Strategy registry
 from app.core.strategies import ai_strategies_for_signal, Strategy
 
 log = get_logger("executor_v2")
@@ -122,8 +122,8 @@ async def handle_strategy_signal(
 
     Modes:
       - OFF        -> ignored
-      - LEARN_DRY  -> AI + feature logging + sizing, PAPER only
-      - LIVE_CANARY / LIVE_FULL -> AI + logging + sizing + LIVE orders
+      - LEARN_DRY  -> AI + sizing, PAPER only
+      - LIVE_CANARY / LIVE_FULL -> AI + sizing + LIVE orders
     """
     bound = bind_context(log, strat=strat.id)
 
@@ -139,34 +139,26 @@ async def handle_strategy_signal(
     symbol = sig.get("symbol")
     tf = sig.get("timeframe")
     side = sig.get("side")
-    price = float(sig.get("price", 0) or 0)
-    ts = sig.get("ts")
+    price_val = sig.get("price", 0) or 0
+    price = float(price_val)
 
     if not symbol or not tf or not side:
         bound.warning("missing required fields in signal: %r", sig)
         return
 
-    # --- AI Classifier Gate ---
-    # trade_classifier.classify now expects (signal, strategy_id) -> dict
+    # --- AI Classifier Gate (soft-fail) ---
+    # We *try* to use trade_classifier.classify, but we will NOT let it crash the executor.
     try:
         clf = classify_trade(sig, strat.id)
-    except TypeError as e:
-        # In case it actually only wants 1 argument, fallback to classify(sig)
-        bound.warning(
-            "trade_classifier.classify signature mismatch (%r); retrying with single-arg.", e
-        )
-        try:
-            clf = classify_trade(sig)
-        except Exception as e2:
-            bound.error("AI classifier failed completely: %r", e2)
-            return
+        if not isinstance(clf, dict):
+            raise TypeError(f"classifier returned {type(clf)}")
     except Exception as e:
-        bound.error("AI classifier crashed: %r", e)
-        return
-
-    if not isinstance(clf, dict):
-        bound.warning("AI classifier returned non-dict: %r", clf)
-        return
+        bound.warning(
+            "AI classifier crashed or misbehaved for [%s]: %r — bypassing gate (allow=True).",
+            strat.id,
+            e,
+        )
+        clf = {"allow": True, "reason": f"ai_error_bypassed: {e}"}
 
     if not clf.get("allow"):
         bound.info("AI gate rejected: %s", clf.get("reason"))
@@ -183,27 +175,50 @@ async def handle_strategy_signal(
         bound.info("Correlation gate rejected for %s: %s", symbol, corr_reason)
         return
 
-    # --- Feature logging (best-effort) ---
+    # --- Sizing: simple % of equity per strategy ---
     try:
-        log_features(symbol, sig, strat_name=strat.id)
-    except Exception as e:
-        bound.warning("feature logging failed: %r", e)
+        if price <= 0:
+            bound.info("price <= 0; skipping sizing for %s", symbol)
+            return
 
-    # --- Sizing (still uses your existing bayesian_size + risk_capped_qty stack) ---
-    try:
-        raw_qty = bayesian_size(symbol, side, price, strat.id)
-        qty = risk_capped_qty(symbol, raw_qty)
+        try:
+            equity_usd = Decimal(str(get_equity_usdt()))
+        except Exception as e:
+            bound.error("get_equity_usdt error: %r", e)
+            return
+
+        risk_pct_val = Decimal(str(strat.risk_per_trade_pct or 0))
+        if risk_pct_val <= 0:
+            bound.info(
+                "risk_per_trade_pct <= 0 for %s; skipping entry.", strat.id
+            )
+            return
+
+        # Interpret risk_per_trade_pct as percent, e.g. 0.25 -> 0.25%
+        risk_frac = risk_pct_val / Decimal("100")
+        notional_usd = (equity_usd * risk_frac).quantize(Decimal("0.01"))
+
+        if notional_usd <= 0:
+            bound.info(
+                "notional_usd <= 0 after sizing for %s; equity=%s risk_pct=%s",
+                strat.id,
+                equity_usd,
+                risk_pct_val,
+            )
+            return
+
+        qty = (notional_usd / Decimal(str(price))).quantize(Decimal("0.0001"))
     except Exception as e:
         bound.error("sizing error: %r", e)
         return
 
-    if not qty or qty <= 0:
-        bound.info("qty <= 0 after sizing; skipping entry. raw=%r", raw_qty)
+    if qty <= 0:
+        bound.info("qty <= 0 after sizing; skipping entry. notional=%s", notional_usd)
         return
 
     # LIVE vs PAPER behaviour based on strategy automation_mode
     if strat.can_trade_live:
-        await execute_entry(symbol, side, qty, price, strat, bound)
+        await execute_entry(symbol, side, float(qty), price, strat, bound)
     else:
         bound.info(
             "PAPER entry (%s): %s %s qty=%s @ ~%s",

@@ -2,3 +2,8 @@
 {"symbol":"BTCUSDT","side":"Buy","reason":"manual_test","ts_ms":1763269400458,"est_rr":0.3}
 {"symbol":"BTCUSDT","timeframe":"5","side":"Buy","price":65000,"ts":1763448449424,"source":"emit_test_signal","note":"single test signal for executor_v2 + canaries"}
 {"symbol":"BTCUSDT","timeframe":"5","side":"Buy","price":65000,"ts":1763448573686,"source":"emit_test_signal","note":"single test signal for executor_v2 + canaries"}
+{"symbol":"BTCUSDT","timeframe":"5","side":"Buy","price":65000,"ts":1763448984825,"source":"emit_test_signal","note":"single test signal for executor_v2 + canaries"}
+{"symbol":"BTCUSDT","timeframe":"5","side":"Buy","price":65000,"ts":1763449292969,"source":"emit_test_signal","note":"single test signal for executor_v2 + canaries"}
+{"symbol":"BTCUSDT","timeframe":"5","side":"Buy","price":65000,"ts":1763449405294,"source":"emit_test_signal","note":"single test signal for executor_v2 + canaries"}
+{"symbol":"BTCUSDT","timeframe":"5","side":"Buy","price":65000,"ts":1763449499800,"source":"emit_test_signal","note":"single test signal for executor_v2 + canaries"}
+{"symbol":"BTCUSDT","timeframe":"5","side":"Buy","price":65000,"ts":1763449623175,"source":"emit_test_signal","note":"single test signal for executor_v2 + canaries"}

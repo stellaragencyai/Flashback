@@ -1753,3 +1753,283 @@ websockets.exceptions.ConnectionClosedError: no close frame received or sent
 2025-11-18 06:53:39,759 [INFO] [ws_switchboard] WS[main] auth success
 2025-11-18 06:53:39,759 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
 2025-11-18 06:53:40,083 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2a49pvavkf41472uvig-234099'}
+2025-11-18 06:53:41,496 [INFO] [executor_v2] executor_v2 starting at cursor=520
+2025-11-18 06:56:04,132 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 06:56:04,133 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 06:56:07,135 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 06:56:08,528 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 06:56:08,874 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 06:56:08,874 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 06:56:09,210 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2a47vdhv25d3p16hcng-2348lw'}
+2025-11-18 06:56:24,926 [ERROR] [executor_v2] Strategy error (Sub2_Breakout(524633243)): TypeError('classify() takes 2 positional arguments but 5 were given')
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 109, in process_signal_line
+    await handle_strategy_signal(strat, sig)
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 150, in handle_strategy_signal
+    # trade_classifier.classify now expects (signal, strategy_id) -> dict
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: classify() takes 2 positional arguments but 5 were given
+2025-11-18 06:56:24,928 [ERROR] [executor_v2] Strategy error (Sub3_ScalpMajors(524634622)): TypeError('classify() takes 2 positional arguments but 5 were given')
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 109, in process_signal_line
+    await handle_strategy_signal(strat, sig)
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 150, in handle_strategy_signal
+    # trade_classifier.classify now expects (signal, strategy_id) -> dict
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: classify() takes 2 positional arguments but 5 were given
+2025-11-18 06:56:24,928 [ERROR] [executor_v2] Strategy error (Sub7_Canary(524649709)): TypeError('classify() takes 2 positional arguments but 5 were given')
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 109, in process_signal_line
+    await handle_strategy_signal(strat, sig)
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 150, in handle_strategy_signal
+    # trade_classifier.classify now expects (signal, strategy_id) -> dict
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: classify() takes 2 positional arguments but 5 were given
+2025-11-18 06:56:24,929 [ERROR] [executor_v2] Strategy error (Sub9_Range(524693375)): TypeError('classify() takes 2 positional arguments but 5 were given')
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 109, in process_signal_line
+    await handle_strategy_signal(strat, sig)
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 150, in handle_strategy_signal
+    # trade_classifier.classify now expects (signal, strategy_id) -> dict
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: classify() takes 2 positional arguments but 5 were given
+2025-11-18 06:56:24,934 [INFO] [strategies] Loaded 10 strategies from C:\Users\nolan\Desktop\Flashback\config\strategies.yaml (version=3)
+2025-11-18 06:56:24,934 [ERROR] [executor_v2] AI classifier crashed: AttributeError("'str' object has no attribute 'get'")
+2025-11-18 06:56:24,934 [ERROR] [executor_v2] AI classifier crashed: AttributeError("'str' object has no attribute 'get'")
+2025-11-18 06:56:24,934 [ERROR] [executor_v2] AI classifier crashed: AttributeError("'str' object has no attribute 'get'")
+2025-11-18 06:56:24,934 [ERROR] [executor_v2] AI classifier crashed: AttributeError("'str' object has no attribute 'get'")
+2025-11-18 06:58:10,129 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 06:58:10,130 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 06:58:13,135 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 06:58:14,446 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 06:58:14,776 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 06:58:14,776 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 06:58:15,100 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2k4llnsebh8vjv3e5e0-1q4k1k'}
+2025-11-18 06:59:43,131 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 06:59:43,131 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 06:59:46,145 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 06:59:47,501 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 06:59:47,844 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 06:59:47,844 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 06:59:48,168 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2etkvfu59kpms6jaing-1vp642'}
+2025-11-18 07:01:26,648 [INFO] [executor_v2] executor_v2 stopped by user
+2025-11-18 07:01:27,983 [INFO] [executor_v2] executor_v2 starting at cursor=687
+2025-11-18 07:01:33,214 [ERROR] [executor_v2] Strategy error (Sub2_Breakout(524633243)): TypeError('classify() takes 2 positional arguments but 5 were given')
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 109, in process_signal_line
+    await handle_strategy_signal(strat, sig)
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 150, in handle_strategy_signal
+    # We *try* to use trade_classifier.classify, but we will NOT let it crash the executor.
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: classify() takes 2 positional arguments but 5 were given
+2025-11-18 07:01:33,216 [ERROR] [executor_v2] Strategy error (Sub3_ScalpMajors(524634622)): TypeError('classify() takes 2 positional arguments but 5 were given')
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 109, in process_signal_line
+    await handle_strategy_signal(strat, sig)
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 150, in handle_strategy_signal
+    # We *try* to use trade_classifier.classify, but we will NOT let it crash the executor.
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: classify() takes 2 positional arguments but 5 were given
+2025-11-18 07:01:33,216 [ERROR] [executor_v2] Strategy error (Sub7_Canary(524649709)): TypeError('classify() takes 2 positional arguments but 5 were given')
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 109, in process_signal_line
+    await handle_strategy_signal(strat, sig)
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 150, in handle_strategy_signal
+    # We *try* to use trade_classifier.classify, but we will NOT let it crash the executor.
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: classify() takes 2 positional arguments but 5 were given
+2025-11-18 07:01:33,216 [ERROR] [executor_v2] Strategy error (Sub9_Range(524693375)): TypeError('classify() takes 2 positional arguments but 5 were given')
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 109, in process_signal_line
+    await handle_strategy_signal(strat, sig)
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 150, in handle_strategy_signal
+    # We *try* to use trade_classifier.classify, but we will NOT let it crash the executor.
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: classify() takes 2 positional arguments but 5 were given
+2025-11-18 07:01:33,221 [INFO] [strategies] Loaded 10 strategies from C:\Users\nolan\Desktop\Flashback\config\strategies.yaml (version=3)
+2025-11-18 07:01:33,221 [WARNING] [executor_v2] AI classifier crashed or misbehaved for [Sub2_Breakout(524633243)]: AttributeError("'str' object has no attribute 'get'") — bypassing gate (allow=True).
+2025-11-18 07:01:35,280 [WARNING] [executor_v2] feature logging failed: TypeError("log_features() got an unexpected keyword argument 'strat_name'")
+2025-11-18 07:01:35,282 [ERROR] [executor_v2] sizing error: TypeError("risk_capped_qty() missing 3 required positional arguments: 'equity_usd', 'max_risk_pct', and 'stop_distance'")
+2025-11-18 07:01:35,282 [WARNING] [executor_v2] AI classifier crashed or misbehaved for [Sub3_ScalpMajors(524634622)]: AttributeError("'str' object has no attribute 'get'") — bypassing gate (allow=True).
+2025-11-18 07:01:36,464 [WARNING] [executor_v2] feature logging failed: TypeError("log_features() got an unexpected keyword argument 'strat_name'")
+2025-11-18 07:01:36,464 [ERROR] [executor_v2] sizing error: TypeError("risk_capped_qty() missing 3 required positional arguments: 'equity_usd', 'max_risk_pct', and 'stop_distance'")
+2025-11-18 07:01:36,464 [WARNING] [executor_v2] AI classifier crashed or misbehaved for [Sub7_Canary(524649709)]: AttributeError("'str' object has no attribute 'get'") — bypassing gate (allow=True).
+2025-11-18 07:01:37,295 [WARNING] [executor_v2] feature logging failed: TypeError("log_features() got an unexpected keyword argument 'strat_name'")
+2025-11-18 07:01:37,296 [ERROR] [executor_v2] sizing error: TypeError("risk_capped_qty() missing 3 required positional arguments: 'equity_usd', 'max_risk_pct', and 'stop_distance'")
+2025-11-18 07:01:37,296 [WARNING] [executor_v2] AI classifier crashed or misbehaved for [Sub9_Range(524693375)]: AttributeError("'str' object has no attribute 'get'") — bypassing gate (allow=True).
+2025-11-18 07:01:38,233 [WARNING] [executor_v2] feature logging failed: TypeError("log_features() got an unexpected keyword argument 'strat_name'")
+2025-11-18 07:01:38,233 [ERROR] [executor_v2] sizing error: TypeError("risk_capped_qty() missing 3 required positional arguments: 'equity_usd', 'max_risk_pct', and 'stop_distance'")
+2025-11-18 07:03:20,504 [INFO] [executor_v2] executor_v2 stopped by user
+2025-11-18 07:03:21,903 [INFO] [executor_v2] executor_v2 starting at cursor=854
+2025-11-18 07:03:25,398 [ERROR] [executor_v2] Strategy error (Sub2_Breakout(524633243)): TypeError('classify() takes 2 positional arguments but 5 were given')
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 109, in process_signal_line
+    try:
+        ^
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 150, in handle_strategy_signal
+TypeError: classify() takes 2 positional arguments but 5 were given
+2025-11-18 07:03:25,399 [ERROR] [executor_v2] Strategy error (Sub3_ScalpMajors(524634622)): TypeError('classify() takes 2 positional arguments but 5 were given')
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 109, in process_signal_line
+    try:
+        ^
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 150, in handle_strategy_signal
+TypeError: classify() takes 2 positional arguments but 5 were given
+2025-11-18 07:03:25,399 [ERROR] [executor_v2] Strategy error (Sub7_Canary(524649709)): TypeError('classify() takes 2 positional arguments but 5 were given')
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 109, in process_signal_line
+    try:
+        ^
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 150, in handle_strategy_signal
+TypeError: classify() takes 2 positional arguments but 5 were given
+2025-11-18 07:03:25,399 [ERROR] [executor_v2] Strategy error (Sub9_Range(524693375)): TypeError('classify() takes 2 positional arguments but 5 were given')
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 109, in process_signal_line
+    try:
+        ^
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 150, in handle_strategy_signal
+TypeError: classify() takes 2 positional arguments but 5 were given
+2025-11-18 07:03:25,522 [INFO] [strategies] Loaded 10 strategies from C:\Users\nolan\Desktop\Flashback\config\strategies.yaml (version=3)
+2025-11-18 07:03:25,523 [WARNING] [executor_v2] AI classifier crashed or misbehaved for [Sub2_Breakout(524633243)]: AttributeError("'str' object has no attribute 'get'") — bypassing gate (allow=True).
+2025-11-18 07:03:27,343 [WARNING] [executor_v2] feature logging failed: TypeError('log_features() takes 0 positional arguments but 2 were given')
+2025-11-18 07:03:28,230 [ERROR] [executor_v2] Strategy error (Sub2_Breakout(524633243)): TypeError("'<=' not supported between instances of 'tuple' and 'int'")
+Traceback (most recent call last):
+  File "C:\Users\nolan\desktop\flashback\app\bots\executor_v2.py", line 110, in process_signal_line
+    await handle_strategy_signal(strat, sig)
+  File "C:\Users\nolan\desktop\flashback\app\bots\executor_v2.py", line 227, in handle_strategy_signal
+    if not qty or qty <= 0:
+                  ^^^^^^^^
+TypeError: '<=' not supported between instances of 'tuple' and 'int'
+2025-11-18 07:03:28,232 [WARNING] [executor_v2] AI classifier crashed or misbehaved for [Sub3_ScalpMajors(524634622)]: AttributeError("'str' object has no attribute 'get'") — bypassing gate (allow=True).
+2025-11-18 07:03:29,265 [WARNING] [executor_v2] feature logging failed: TypeError('log_features() takes 0 positional arguments but 2 were given')
+2025-11-18 07:03:30,140 [ERROR] [executor_v2] Strategy error (Sub3_ScalpMajors(524634622)): TypeError("'<=' not supported between instances of 'tuple' and 'int'")
+Traceback (most recent call last):
+  File "C:\Users\nolan\desktop\flashback\app\bots\executor_v2.py", line 110, in process_signal_line
+    await handle_strategy_signal(strat, sig)
+  File "C:\Users\nolan\desktop\flashback\app\bots\executor_v2.py", line 227, in handle_strategy_signal
+    if not qty or qty <= 0:
+                  ^^^^^^^^
+TypeError: '<=' not supported between instances of 'tuple' and 'int'
+2025-11-18 07:03:30,141 [WARNING] [executor_v2] AI classifier crashed or misbehaved for [Sub7_Canary(524649709)]: AttributeError("'str' object has no attribute 'get'") — bypassing gate (allow=True).
+2025-11-18 07:03:30,978 [WARNING] [executor_v2] feature logging failed: TypeError('log_features() takes 0 positional arguments but 2 were given')
+2025-11-18 07:03:31,826 [ERROR] [executor_v2] Strategy error (Sub7_Canary(524649709)): TypeError("'<=' not supported between instances of 'tuple' and 'int'")
+Traceback (most recent call last):
+  File "C:\Users\nolan\desktop\flashback\app\bots\executor_v2.py", line 110, in process_signal_line
+    await handle_strategy_signal(strat, sig)
+  File "C:\Users\nolan\desktop\flashback\app\bots\executor_v2.py", line 227, in handle_strategy_signal
+    if not qty or qty <= 0:
+                  ^^^^^^^^
+TypeError: '<=' not supported between instances of 'tuple' and 'int'
+2025-11-18 07:03:31,826 [WARNING] [executor_v2] AI classifier crashed or misbehaved for [Sub9_Range(524693375)]: AttributeError("'str' object has no attribute 'get'") — bypassing gate (allow=True).
+2025-11-18 07:03:32,703 [WARNING] [executor_v2] feature logging failed: TypeError('log_features() takes 0 positional arguments but 2 were given')
+2025-11-18 07:03:33,785 [ERROR] [executor_v2] Strategy error (Sub9_Range(524693375)): TypeError("'<=' not supported between instances of 'tuple' and 'int'")
+Traceback (most recent call last):
+  File "C:\Users\nolan\desktop\flashback\app\bots\executor_v2.py", line 110, in process_signal_line
+    await handle_strategy_signal(strat, sig)
+  File "C:\Users\nolan\desktop\flashback\app\bots\executor_v2.py", line 227, in handle_strategy_signal
+    if not qty or qty <= 0:
+                  ^^^^^^^^
+TypeError: '<=' not supported between instances of 'tuple' and 'int'
+2025-11-18 07:03:42,565 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 07:03:42,565 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 07:03:45,579 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 07:03:47,613 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 07:03:47,941 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 07:03:47,941 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 07:03:48,265 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2a49pvavkf41472uvig-2346ut'}
+2025-11-18 07:04:55,160 [INFO] [executor_v2] executor_v2 stopped by user
+2025-11-18 07:04:56,364 [INFO] [executor_v2] executor_v2 starting at cursor=1021
+2025-11-18 07:05:00,015 [ERROR] [executor_v2] Strategy error (Sub2_Breakout(524633243)): TypeError('classify() takes 2 positional arguments but 5 were given')
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 109, in process_signal_line
+    try:
+        ^
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 150, in handle_strategy_signal
+TypeError: classify() takes 2 positional arguments but 5 were given
+2025-11-18 07:05:00,015 [ERROR] [executor_v2] Strategy error (Sub3_ScalpMajors(524634622)): TypeError('classify() takes 2 positional arguments but 5 were given')
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 109, in process_signal_line
+    try:
+        ^
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 150, in handle_strategy_signal
+TypeError: classify() takes 2 positional arguments but 5 were given
+2025-11-18 07:05:00,015 [ERROR] [executor_v2] Strategy error (Sub7_Canary(524649709)): TypeError('classify() takes 2 positional arguments but 5 were given')
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 109, in process_signal_line
+    try:
+        ^
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 150, in handle_strategy_signal
+TypeError: classify() takes 2 positional arguments but 5 were given
+2025-11-18 07:05:00,015 [ERROR] [executor_v2] Strategy error (Sub9_Range(524693375)): TypeError('classify() takes 2 positional arguments but 5 were given')
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 109, in process_signal_line
+    try:
+        ^
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 150, in handle_strategy_signal
+TypeError: classify() takes 2 positional arguments but 5 were given
+2025-11-18 07:05:00,025 [INFO] [strategies] Loaded 10 strategies from C:\Users\nolan\Desktop\Flashback\config\strategies.yaml (version=3)
+2025-11-18 07:05:00,026 [WARNING] [executor_v2] AI classifier crashed or misbehaved for [Sub2_Breakout(524633243)]: AttributeError("'str' object has no attribute 'get'") — bypassing gate (allow=True).
+2025-11-18 07:05:01,733 [WARNING] [executor_v2] feature logging failed: TypeError("log_features() missing 13 required keyword-only arguments: 'sub_uid', 'strategy', 'strategy_id', 'symbol', 'side', 'mode', 'equity_usd', 'risk_usd', 'risk_pct', 'ai_score', 'ai_reason', 'features', and 'signal'")
+2025-11-18 07:05:02,575 [INFO] [executor_v2] qty <= 0 after sizing; skipping entry. raw=(Decimal('0'), Decimal('0'))
+2025-11-18 07:05:02,576 [WARNING] [executor_v2] AI classifier crashed or misbehaved for [Sub3_ScalpMajors(524634622)]: AttributeError("'str' object has no attribute 'get'") — bypassing gate (allow=True).
+2025-11-18 07:05:03,432 [WARNING] [executor_v2] feature logging failed: TypeError("log_features() missing 13 required keyword-only arguments: 'sub_uid', 'strategy', 'strategy_id', 'symbol', 'side', 'mode', 'equity_usd', 'risk_usd', 'risk_pct', 'ai_score', 'ai_reason', 'features', and 'signal'")
+2025-11-18 07:05:03,975 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 07:05:03,975 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 07:05:04,267 [INFO] [executor_v2] qty <= 0 after sizing; skipping entry. raw=(Decimal('0'), Decimal('0'))
+2025-11-18 07:05:04,268 [WARNING] [executor_v2] AI classifier crashed or misbehaved for [Sub7_Canary(524649709)]: AttributeError("'str' object has no attribute 'get'") — bypassing gate (allow=True).
+2025-11-18 07:05:05,107 [WARNING] [executor_v2] feature logging failed: TypeError("log_features() missing 13 required keyword-only arguments: 'sub_uid', 'strategy', 'strategy_id', 'symbol', 'side', 'mode', 'equity_usd', 'risk_usd', 'risk_pct', 'ai_score', 'ai_reason', 'features', and 'signal'")
+2025-11-18 07:05:05,960 [INFO] [executor_v2] qty <= 0 after sizing; skipping entry. raw=(Decimal('0'), Decimal('0'))
+2025-11-18 07:05:05,960 [WARNING] [executor_v2] AI classifier crashed or misbehaved for [Sub9_Range(524693375)]: AttributeError("'str' object has no attribute 'get'") — bypassing gate (allow=True).
+2025-11-18 07:05:06,969 [WARNING] [executor_v2] feature logging failed: TypeError("log_features() missing 13 required keyword-only arguments: 'sub_uid', 'strategy', 'strategy_id', 'symbol', 'side', 'mode', 'equity_usd', 'risk_usd', 'risk_pct', 'ai_score', 'ai_reason', 'features', and 'signal'")
+2025-11-18 07:05:06,990 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 07:05:07,853 [INFO] [executor_v2] qty <= 0 after sizing; skipping entry. raw=(Decimal('0'), Decimal('0'))
+2025-11-18 07:05:08,353 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 07:05:08,690 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 07:05:08,690 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 07:05:09,016 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2k4lmp2u28or6avtv7g-1q4two'}
+2025-11-18 07:06:58,632 [INFO] [executor_v2] executor_v2 stopped by user
