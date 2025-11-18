@@ -12,6 +12,7 @@ Purpose
     • Run AI gating (trade_classifier) — soft-fail, never crash executor.
     • Run correlation gate.
     • Size entries using a simple % of equity per strategy.
+    • Log rich feature context via feature_store.log_features for AI memory.
     • Place live entries only for LIVE_* strategies.
       LEARN_DRY stays paper (logged only).
 - TP/SL handled by separate bot (tp_manager).
@@ -20,8 +21,6 @@ Notes
 -----
 - This executor is stateless across runs except for the cursor file.
 - Strategy rules live in config/strategies.yaml and app.core.strategies.
-- Fancy sizing (bayesian_size / risk_capped_qty) and full feature logging
-  will be re-integrated later once their signatures are aligned.
 """
 
 from __future__ import annotations
@@ -36,6 +35,7 @@ from app.core.config import settings
 from app.core.logger import get_logger, bind_context
 from app.core.bybit_client import Bybit
 from app.core.notifier_bot import tg_send
+from app.core.feature_store import log_features
 from app.core.trade_classifier import classify as classify_trade
 from app.core.corr_gate_v2 import allow as corr_allow
 from app.core.portfolio_guard import can_open_trade
@@ -122,8 +122,8 @@ async def handle_strategy_signal(
 
     Modes:
       - OFF        -> ignored
-      - LEARN_DRY  -> AI + sizing, PAPER only
-      - LIVE_CANARY / LIVE_FULL -> AI + sizing + LIVE orders
+      - LEARN_DRY  -> AI + sizing + feature logging, PAPER only
+      - LIVE_CANARY / LIVE_FULL -> AI + sizing + feature logging + LIVE orders
     """
     bound = bind_context(log, strat=strat.id)
 
@@ -147,7 +147,7 @@ async def handle_strategy_signal(
         return
 
     # --- AI Classifier Gate (soft-fail) ---
-    # We *try* to use trade_classifier.classify, but we will NOT let it crash the executor.
+    # Try to use trade_classifier.classify, but never allow it to kill the executor.
     try:
         clf = classify_trade(sig, strat.id)
         if not isinstance(clf, dict):
@@ -164,7 +164,7 @@ async def handle_strategy_signal(
         bound.info("AI gate rejected: %s", clf.get("reason"))
         return
 
-    # --- Correlation gate (unpack (allowed, reason)) ---
+    # --- Correlation gate ---
     try:
         allowed_corr, corr_reason = corr_allow(symbol)
     except Exception as e:
@@ -216,7 +216,31 @@ async def handle_strategy_signal(
         bound.info("qty <= 0 after sizing; skipping entry. notional=%s", notional_usd)
         return
 
-    # LIVE vs PAPER behaviour based on strategy automation_mode
+    # --- Feature logging for AI memory (best-effort) ---
+    try:
+        ai_score = clf.get("score") or clf.get("confidence") or 1.0
+        ai_reason = str(clf.get("reason", ""))
+        features = clf.get("features") or {}
+
+        log_features(
+            sub_uid=strat.sub_uid,
+            strategy=strat.role or strat.name,
+            strategy_id=strat.id,
+            symbol=symbol,
+            side=side,
+            mode=mode,
+            equity_usd=float(equity_usd),
+            risk_usd=float(notional_usd),
+            risk_pct=float(risk_pct_val),
+            ai_score=float(ai_score),
+            ai_reason=ai_reason,
+            features=features,
+            signal=sig,
+        )
+    except Exception as e:
+        bound.warning("feature logging failed: %r", e)
+
+    # LIVE vs PAPER behaviour based on strategy.automation_mode
     if strat.can_trade_live:
         await execute_entry(symbol, side, float(qty), price, strat, bound)
     else:

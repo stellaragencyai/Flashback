@@ -2033,3 +2033,45 @@ websockets.exceptions.ConnectionClosedError: no close frame received or sent
 2025-11-18 07:05:08,690 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
 2025-11-18 07:05:09,016 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2k4lmp2u28or6avtv7g-1q4two'}
 2025-11-18 07:06:58,632 [INFO] [executor_v2] executor_v2 stopped by user
+2025-11-18 07:06:59,667 [INFO] [executor_v2] executor_v2 starting at cursor=1188
+2025-11-18 07:07:03,295 [ERROR] [executor_v2] Strategy error (Sub2_Breakout(524633243)): TypeError('classify() takes 2 positional arguments but 5 were given')
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 109, in process_signal_line
+    await handle_strategy_signal(strat, sig)
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 150, in handle_strategy_signal
+    # We *try* to use trade_classifier.classify, but we will NOT let it crash the executor.
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: classify() takes 2 positional arguments but 5 were given
+2025-11-18 07:07:03,295 [ERROR] [executor_v2] Strategy error (Sub3_ScalpMajors(524634622)): TypeError('classify() takes 2 positional arguments but 5 were given')
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 109, in process_signal_line
+    await handle_strategy_signal(strat, sig)
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 150, in handle_strategy_signal
+    # We *try* to use trade_classifier.classify, but we will NOT let it crash the executor.
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: classify() takes 2 positional arguments but 5 were given
+2025-11-18 07:07:03,295 [ERROR] [executor_v2] Strategy error (Sub7_Canary(524649709)): TypeError('classify() takes 2 positional arguments but 5 were given')
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 109, in process_signal_line
+    await handle_strategy_signal(strat, sig)
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 150, in handle_strategy_signal
+    # We *try* to use trade_classifier.classify, but we will NOT let it crash the executor.
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: classify() takes 2 positional arguments but 5 were given
+2025-11-18 07:07:03,295 [ERROR] [executor_v2] Strategy error (Sub9_Range(524693375)): TypeError('classify() takes 2 positional arguments but 5 were given')
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 109, in process_signal_line
+    await handle_strategy_signal(strat, sig)
+  File "C:\Users\nolan\Desktop\Flashback\app\bots\executor_v2.py", line 150, in handle_strategy_signal
+    # We *try* to use trade_classifier.classify, but we will NOT let it crash the executor.
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: classify() takes 2 positional arguments but 5 were given
+2025-11-18 07:07:03,302 [INFO] [strategies] Loaded 10 strategies from C:\Users\nolan\Desktop\Flashback\config\strategies.yaml (version=3)
+2025-11-18 07:07:03,302 [WARNING] [executor_v2] AI classifier crashed or misbehaved for [Sub2_Breakout(524633243)]: AttributeError("'str' object has no attribute 'get'") — bypassing gate (allow=True).
+2025-11-18 07:07:06,210 [INFO] [executor_v2] notional_usd <= 0 after sizing for Sub2_Breakout(524633243); equity=-43.2917622 risk_pct=0.2
+2025-11-18 07:07:06,210 [WARNING] [executor_v2] AI classifier crashed or misbehaved for [Sub3_ScalpMajors(524634622)]: AttributeError("'str' object has no attribute 'get'") — bypassing gate (allow=True).
+2025-11-18 07:07:08,018 [INFO] [executor_v2] notional_usd <= 0 after sizing for Sub3_ScalpMajors(524634622); equity=-44.9765622 risk_pct=0.2
+2025-11-18 07:07:08,018 [WARNING] [executor_v2] AI classifier crashed or misbehaved for [Sub7_Canary(524649709)]: AttributeError("'str' object has no attribute 'get'") — bypassing gate (allow=True).
+2025-11-18 07:07:10,274 [INFO] [executor_v2] notional_usd <= 0 after sizing for Sub7_Canary(524649709); equity=-44.9765622 risk_pct=0.1
+2025-11-18 07:07:10,275 [WARNING] [executor_v2] AI classifier crashed or misbehaved for [Sub9_Range(524693375)]: AttributeError("'str' object has no attribute 'get'") — bypassing gate (allow=True).
+2025-11-18 07:07:11,960 [INFO] [executor_v2] notional_usd <= 0 after sizing for Sub9_Range(524693375); equity=-44.9765622 risk_pct=0.2
