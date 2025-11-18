@@ -1,2 +1,3 @@
 {"symbol":"BTCUSDT","side":"Buy","reason":"manual_test","ts_ms":1731712345678,"est_rr":0.3}
 {"symbol":"BTCUSDT","side":"Buy","reason":"manual_test","ts_ms":1763269400458,"est_rr":0.3}
+{"symbol":"BTCUSDT","timeframe":"5","side":"Buy","price":65000,"ts":1763448449424,"source":"emit_test_signal","note":"single test signal for executor_v2 + canaries"}
