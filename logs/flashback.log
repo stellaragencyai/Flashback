@@ -103,3 +103,788 @@ OSError: telling position disabled by next() call
 2025-11-18 03:15:02,920 [INFO] [ws_switchboard] WS[main] auth success
 2025-11-18 03:15:02,920 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
 2025-11-18 03:15:03,220 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2a4avpdcjmg2d3kk0qg-22zpbl'}
+2025-11-18 03:16:36,116 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 03:16:36,131 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 03:16:39,137 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 03:16:40,526 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 03:16:40,858 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 03:16:40,858 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 03:16:41,174 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2k4lmh7jh9ov15d4tv0-1q0gp1'}
+2025-11-18 03:17:47,735 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 03:17:47,736 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 03:17:50,751 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 03:17:52,155 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 03:17:52,459 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 03:17:52,459 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 03:17:52,756 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2etkvfu59kpms6jaing-1vl093'}
+2025-11-18 03:21:42,539 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 03:21:42,540 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 03:21:45,543 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 03:21:47,077 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 03:21:47,406 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 03:21:47,406 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 03:21:47,712 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2a48r68dkq9evgsm68g-230bit'}
+2025-11-18 03:24:01,774 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 03:24:01,775 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 03:24:04,777 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 03:24:06,302 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 03:24:06,606 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 03:24:06,607 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 03:24:06,921 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2k4lmb84lk8r2qenlcg-1q0jh0'}
+2025-11-18 03:26:46,903 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 03:26:46,904 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 03:26:49,918 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 03:26:51,482 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 03:26:51,809 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 03:26:51,809 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 03:26:52,108 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2etkvfu59kpms6jaing-1vl782'}
+2025-11-18 03:30:42,504 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 03:30:42,505 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 03:30:45,506 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 03:30:47,022 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 03:30:47,395 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 03:30:47,395 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 03:30:47,734 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2k4llnsebh8vjv3e5e0-1q0oq1'}
+2025-11-18 03:32:43,167 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 03:32:43,167 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 03:32:46,175 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 03:32:47,442 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 03:32:47,743 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 03:32:47,743 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 03:32:48,042 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2etkv5d9o4pn5vi66h0-1vlas8'}
+2025-11-18 03:36:41,678 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 03:36:41,678 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 03:36:44,688 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 03:36:45,884 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 03:36:46,186 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 03:36:46,186 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 03:36:46,491 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2k4lmh7jh9ov15d4tv0-1q0val'}
+2025-11-18 03:38:47,551 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 03:38:47,552 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 03:38:50,557 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 03:38:52,071 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 03:38:52,453 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 03:38:52,453 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 03:38:52,775 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2k4ll3ig3j8o6orlre0-1q0zpo'}
+2025-11-18 03:41:41,824 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 03:41:41,825 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 03:41:44,837 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 03:41:46,311 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 03:41:46,963 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 03:41:46,963 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 03:41:47,355 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2k4lmb84lk8r2qenlcg-1q0vtj'}
+2025-11-18 03:44:46,853 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 03:44:46,853 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 03:44:49,865 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 03:44:51,206 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 03:44:51,503 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 03:44:51,503 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 03:44:51,816 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2a49a8f2tdgf9ie2190-230l6d'}
+2025-11-18 03:46:02,797 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 03:46:02,798 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 03:46:05,802 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 03:46:07,277 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 03:46:07,587 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 03:46:07,587 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 03:46:07,895 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2a4avpdcjmg2d3kk0qg-230btw'}
+2025-11-18 03:49:36,111 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 03:49:36,112 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 03:49:39,123 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 03:49:40,550 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 03:49:40,861 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 03:49:40,862 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 03:49:41,174 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2k4llnsebh8vjv3e5e0-1q11s4'}
+2025-11-18 03:50:43,327 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 03:50:43,327 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 03:50:46,339 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 03:50:47,734 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 03:50:48,097 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 03:50:48,097 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 03:50:48,407 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2a4b7vcgepffl7d4b5g-2306rq'}
+2025-11-18 03:53:08,412 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 03:53:08,412 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 03:53:11,419 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 03:53:12,900 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 03:53:13,197 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 03:53:13,197 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 03:53:13,504 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2k4lmh7jh9ov15d4tv0-1q16ed'}
+2025-11-18 03:56:47,555 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 03:56:47,555 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 03:56:50,565 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 03:56:53,100 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 03:56:53,405 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 03:56:53,405 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 03:56:53,714 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2etkvm0lh599gaea7rg-1vlng0'}
+2025-11-18 04:00:43,792 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 04:00:43,793 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 04:00:46,806 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 04:00:49,274 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 04:00:49,588 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 04:00:49,588 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 04:00:49,899 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2a4a1kfnonks1scuk8g-230onv'}
+2025-11-18 04:02:35,030 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 04:02:35,030 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 04:02:38,039 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 04:02:39,311 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 04:02:39,625 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 04:02:39,625 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 04:02:39,941 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2a49a8f2tdgf9ie2190-230wtw'}
+2025-11-18 04:04:02,881 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 04:04:02,881 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 04:04:05,891 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 04:04:06,049 [ERROR] [ws_switchboard] WS[main] error in run_forever: gaierror(11001, 'getaddrinfo failed')
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 110, in _connect_and_run_once
+    async with websockets.connect(self.url, ping_interval=None) as ws:
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\client.py", line 587, in __aenter__
+    return await self
+           ^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\client.py", line 541, in __await_impl__
+    self.connection = await self.create_connection()
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\client.py", line 467, in create_connection
+    _, connection = await loop.create_connection(factory, **kwargs)
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\AppData\Local\Programs\Python\Python312\Lib\asyncio\base_events.py", line 1083, in create_connection
+    infos = await self._ensure_resolved(
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\AppData\Local\Programs\Python\Python312\Lib\asyncio\base_events.py", line 1466, in _ensure_resolved
+    return await loop.getaddrinfo(host, port, family=family, type=type,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\AppData\Local\Programs\Python\Python312\Lib\asyncio\base_events.py", line 905, in getaddrinfo
+    return await self.run_in_executor(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\AppData\Local\Programs\Python\Python312\Lib\concurrent\futures\thread.py", line 59, in run
+    result = self.fn(*self.args, **self.kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\AppData\Local\Programs\Python\Python312\Lib\socket.py", line 978, in getaddrinfo
+    for res in _socket.getaddrinfo(host, port, family, type, proto, flags):
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+socket.gaierror: [Errno 11001] getaddrinfo failed
+2025-11-18 04:04:06,072 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 04:04:09,083 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 04:04:09,279 [ERROR] [ws_switchboard] WS[main] error in run_forever: gaierror(11001, 'getaddrinfo failed')
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 110, in _connect_and_run_once
+    async with websockets.connect(self.url, ping_interval=None) as ws:
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\client.py", line 587, in __aenter__
+    return await self
+           ^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\client.py", line 541, in __await_impl__
+    self.connection = await self.create_connection()
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\client.py", line 467, in create_connection
+    _, connection = await loop.create_connection(factory, **kwargs)
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\AppData\Local\Programs\Python\Python312\Lib\asyncio\base_events.py", line 1083, in create_connection
+    infos = await self._ensure_resolved(
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\AppData\Local\Programs\Python\Python312\Lib\asyncio\base_events.py", line 1466, in _ensure_resolved
+    return await loop.getaddrinfo(host, port, family=family, type=type,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\AppData\Local\Programs\Python\Python312\Lib\asyncio\base_events.py", line 905, in getaddrinfo
+    return await self.run_in_executor(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\AppData\Local\Programs\Python\Python312\Lib\concurrent\futures\thread.py", line 59, in run
+    result = self.fn(*self.args, **self.kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\AppData\Local\Programs\Python\Python312\Lib\socket.py", line 978, in getaddrinfo
+    for res in _socket.getaddrinfo(host, port, family, type, proto, flags):
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+socket.gaierror: [Errno 11001] getaddrinfo failed
+2025-11-18 04:04:09,280 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 04:04:12,292 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 04:04:14,060 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 04:04:14,389 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 04:04:14,389 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 04:04:14,704 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2a4a1kfnonks1scuk8g-230qx5'}
+2025-11-18 04:05:35,030 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 04:05:35,030 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 04:05:38,035 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 04:05:40,359 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 04:05:40,713 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 04:05:40,713 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 04:05:41,077 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2a4avpdcjmg2d3kk0qg-230ok9'}
+2025-11-18 04:07:36,085 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 04:07:36,086 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 04:07:39,096 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 04:07:40,520 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 04:07:40,829 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 04:07:40,830 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 04:07:41,133 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2a47vdhv25d3p16hcng-2313e5'}
+2025-11-18 04:10:10,123 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 04:10:10,123 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 04:10:13,125 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 04:10:14,484 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 04:10:15,046 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 04:10:15,046 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 04:10:15,384 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2a4agnektagd966d2pg-230t7a'}
+2025-11-18 04:12:34,952 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 04:12:34,952 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 04:12:37,958 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 04:12:40,838 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 04:12:41,138 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 04:12:41,138 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 04:12:41,510 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2a48r68dkq9evgsm68g-231ad0'}
+2025-11-18 04:15:01,721 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 04:15:01,722 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 04:15:04,724 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 04:15:05,968 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 04:15:06,276 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 04:15:06,277 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 04:15:06,591 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2a4agnektagd966d2pg-230wmb'}
+2025-11-18 04:18:35,062 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 04:18:35,062 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 04:18:38,067 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 04:18:39,299 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 04:18:39,597 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 04:18:39,597 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 04:18:39,987 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2a4a1kfnonks1scuk8g-2310nb'}
+2025-11-18 04:20:34,988 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 04:20:34,988 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 04:20:37,997 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 04:20:39,260 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 04:20:39,573 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 04:20:39,573 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 04:20:39,902 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2a4c6evqclvsgos5bjg-230h2z'}
+2025-11-18 04:22:10,101 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 04:22:10,101 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 04:22:13,106 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 04:22:14,435 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 04:22:14,744 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 04:22:14,744 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 04:22:15,065 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2k4llnsebh8vjv3e5e0-1q1n78'}
+2025-11-18 04:23:43,064 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 04:23:43,064 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 04:23:46,074 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 04:23:47,511 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 04:23:47,856 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 04:23:47,856 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 04:23:48,172 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2a48r68dkq9evgsm68g-231hyi'}
+2025-11-18 04:27:01,756 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 04:27:01,756 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 04:27:04,763 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 04:27:06,175 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 04:27:06,488 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 04:27:06,488 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 04:27:06,794 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2a48r68dkq9evgsm68g-231kea'}
+2025-11-18 04:30:01,660 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 04:30:01,660 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 04:30:04,667 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 04:30:06,051 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 04:30:06,349 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 04:30:06,349 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 04:30:06,642 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2a4agnektagd966d2pg-2317kl'}
+2025-11-18 04:33:35,104 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 04:33:35,104 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 04:33:38,110 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 04:33:39,577 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 04:33:39,885 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 04:33:39,885 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 04:33:40,222 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2a4bn2rq7jsp2vg2h70-2310zo'}
+2025-11-18 04:36:09,134 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 04:36:09,134 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 04:36:12,144 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 04:36:13,463 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 04:36:13,756 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 04:36:13,756 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 04:36:14,046 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2a4bn2rq7jsp2vg2h70-2312ns'}
+2025-11-18 04:39:09,189 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 04:39:09,190 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 04:39:12,202 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 04:39:13,606 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 04:39:13,920 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 04:39:13,920 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 04:39:14,218 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2a4a1kfnonks1scuk8g-231fnw'}
+2025-11-18 04:41:34,974 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 04:41:34,974 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 04:41:37,988 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 04:41:39,380 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 04:41:39,683 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 04:41:39,683 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 04:41:39,994 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2etkvfu59kpms6jaing-1vmmr3'}
+2025-11-18 04:42:42,609 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 04:42:42,610 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 04:42:45,622 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 04:42:47,011 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 04:42:47,328 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 04:42:47,328 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 04:42:47,629 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2k4llnsebh8vjv3e5e0-1q22b5'}
+2025-11-18 04:44:43,001 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 04:44:43,002 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 04:44:46,013 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 04:44:47,254 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 04:44:47,568 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 04:44:47,569 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 04:44:47,875 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2k4lmp2u28or6avtv7g-1q2926'}
+2025-11-18 04:47:48,183 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 04:47:48,184 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 04:47:51,187 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 04:47:53,006 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 04:47:53,315 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 04:47:53,315 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 04:47:53,614 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2k4lmh7jh9ov15d4tv0-1q287z'}
+2025-11-18 04:50:47,541 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 04:50:47,542 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 04:50:50,557 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 04:50:51,996 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 04:50:52,287 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 04:50:52,287 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 04:50:52,574 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2a4bn2rq7jsp2vg2h70-231cgp'}
+2025-11-18 04:54:09,227 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 04:54:09,227 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 04:54:12,240 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 04:54:13,550 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 04:54:13,842 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 04:54:13,842 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 04:54:14,133 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2etkvm0lh599gaea7rg-1vmqyp'}
+2025-11-18 04:57:43,901 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 04:57:43,902 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 04:57:46,916 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 04:57:48,128 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 04:57:48,427 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 04:57:48,427 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 04:57:48,732 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2a4agnektagd966d2pg-231qdy'}
+2025-11-18 05:00:35,148 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 05:00:35,148 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 05:00:38,163 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 05:00:39,541 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 05:00:39,843 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 05:00:39,843 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 05:00:40,144 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2etkv5d9o4pn5vi66h0-1vmyt1'}
+2025-11-18 05:03:41,766 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 05:03:41,766 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 05:03:44,772 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 05:03:46,011 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 05:03:46,327 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 05:03:46,327 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 05:03:46,639 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2etkv5d9o4pn5vi66h0-1vn0ug'}
+2025-11-18 05:06:41,570 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 05:06:41,570 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 05:06:44,579 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 05:06:45,787 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 05:06:46,089 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 05:06:46,089 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 05:06:46,387 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2a4c6evqclvsgos5bjg-231d3e'}
+2025-11-18 05:10:10,085 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 05:10:10,085 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-18 05:10:13,091 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 05:10:14,579 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 05:10:14,889 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 05:10:14,889 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 05:10:15,200 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2etl02lag5p38k9mt8g-1vn1if'}
+2025-11-18 05:12:44,990 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-18 05:12:44,990 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-17 22:12:47,379 [INFO] [strategies_debug] Running strategies_debug tool...
+2025-11-17 22:12:47,392 [INFO] [strategies] Loaded 10 strategies from C:\Users\nolan\Desktop\Flashback\config\strategies.yaml (version=3)
