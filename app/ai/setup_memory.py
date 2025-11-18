@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Flashback — AI Setup Memory Builder (v1)
+Flashback — AI Setup Memory Builder (v1.1)
 
 Purpose
 -------
 Merge:
   - Trade-open feature snapshots (state/features_trades.jsonl)
-  - Closed trade outcomes        (app/state/journal.jsonl)
+  - Closed trade outcomes        (state/journal.jsonl)
 
 Into:
   - state/setup_memory.jsonl
@@ -36,10 +36,16 @@ Each merged row is a single labeled training example:
     "label_win": bool,
     "label_good": bool,          # e.g. rating >= 7
     "label_rr_ge_1": bool,       # RR >= 1.0
+    "order_link_id": str | null
   }
 
 Matching logic
 --------------
+Primary:
+- Join by order_link_id:
+    • feature.order_link_id == journal.order_link_id
+
+Fallback (for old rows with no link id):
 - Match by symbol AND time:
     • For each closed trade in journal.jsonl:
         - take its ts_open (if present, else ts_close)
@@ -47,12 +53,10 @@ Matching logic
           where |ts_open - ts_feature| <= MATCH_WINDOW_MS (default 10 min)
         - use each feature row at most once.
 
-- Unmatched trades or features are ignored (logged in summary).
-
 Files
 -----
 Input:
-  - ROOT/app/state/journal.jsonl
+  - ROOT/state/journal.jsonl
   - ROOT/state/features_trades.jsonl
 
 Output:
@@ -61,20 +65,27 @@ Output:
 
 from __future__ import annotations
 
-import time
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Set
 
 import orjson
 
 # -------- Paths / constants -------- #
 
-ROOT = Path(__file__).resolve().parents[2]
+try:
+    from app.core.config import settings
+except ImportError:
+    from core.config import settings  # type: ignore
 
-JOURNAL_PATH = ROOT / "app" / "state" / "journal.jsonl"
-FEATURES_PATH = ROOT / "state" / "features_trades.jsonl"
-OUTPUT_PATH = ROOT / "state" / "setup_memory.jsonl"
+ROOT = getattr(settings, "ROOT", Path(__file__).resolve().parents[2])
+
+STATE_DIR = ROOT / "state"
+STATE_DIR.mkdir(parents=True, exist_ok=True)
+
+JOURNAL_PATH = STATE_DIR / "journal.jsonl"
+FEATURES_PATH = STATE_DIR / "features_trades.jsonl"
+OUTPUT_PATH = STATE_DIR / "setup_memory.jsonl"
 
 MATCH_WINDOW_MS = 10 * 60 * 1000  # 10 minutes
 
@@ -125,7 +136,7 @@ def _get_ts(row: Dict[str, Any], keys: List[str]) -> Optional[int]:
     return None
 
 
-# -------- Matching logic -------- #
+# -------- Matching logic (fallback: symbol + time) -------- #
 
 def _index_features_by_symbol(features: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
     by_sym: Dict[str, List[Dict[str, Any]]] = {}
@@ -148,7 +159,7 @@ def _index_features_by_symbol(features: List[Dict[str, Any]]) -> Dict[str, List[
 def _find_best_feature_match(
     trade: Dict[str, Any],
     feature_rows: List[Dict[str, Any]],
-    used_ids: set,
+    used_ids: Set[Tuple[int, int]],
 ) -> Optional[Dict[str, Any]]:
     """
     trade: a journal row
@@ -163,7 +174,6 @@ def _find_best_feature_match(
     best_delta = None
 
     for idx, r in enumerate(feature_rows):
-        # unique id: use the object's id() + index combo so we don't match same row twice
         row_id = (id(r), idx)
         if row_id in used_ids:
             continue
@@ -261,6 +271,8 @@ def _merge_feature_and_trade(
     ts_open = feat.get("ts_ms")
     ts_iso = feat.get("ts_iso")
 
+    order_link_id = feat.get("order_link_id") or trade.get("order_link_id")
+
     labels = _build_labels_from_trade(trade)
 
     row = {
@@ -270,6 +282,7 @@ def _merge_feature_and_trade(
         "strategy": strat,
         "strategy_id": strat_id,
         "mode": mode,
+        "order_link_id": order_link_id,
 
         # timing
         "ts_open_ms": ts_open,
@@ -309,29 +322,57 @@ def build_memory() -> None:
     print(f"[setup_memory] Loaded {len(journal_rows)} journal rows.")
     print(f"[setup_memory] Loaded {len(feature_rows)} feature rows.")
 
-    by_sym = _index_features_by_symbol(feature_rows)
-    used_ids: set = set()
+    # --- Primary join: order_link_id ---
+    feat_by_lid: Dict[str, Dict[str, Any]] = {}
+    for fr in feature_rows:
+        lid = fr.get("order_link_id")
+        if not lid:
+            continue
+        feat_by_lid.setdefault(str(lid), fr)
 
+    used_feature_ids: Set[int] = set()
     merged: List[Dict[str, Any]] = []
-    unmatched_trades = 0
+
+    remaining_trades: List[Dict[str, Any]] = []
+    matched_by_link = 0
 
     for trade in journal_rows:
-        sym = str(trade.get("symbol", "")).upper().strip()
-        if not sym:
-            continue
+        lid = trade.get("order_link_id")
+        if lid:
+            fr = feat_by_lid.get(str(lid))
+            if fr is not None:
+                merged.append(_merge_feature_and_trade(fr, trade))
+                used_feature_ids.add(id(fr))
+                matched_by_link += 1
+                continue
+        # no match via link_id -> handle later via fallback
+        remaining_trades.append(trade)
 
-        feats_for_sym = by_sym.get(sym)
-        if not feats_for_sym:
-            unmatched_trades += 1
-            continue
+    # --- Fallback join: symbol + time window, for trades without valid link id ---
+    fallback_unmatched = 0
+    if remaining_trades:
+        # use only features not already consumed by link matches
+        remaining_features = [fr for fr in feature_rows if id(fr) not in used_feature_ids]
+        by_sym = _index_features_by_symbol(remaining_features)
+        used_ids: Set[Tuple[int, int]] = set()
 
-        best_feat = _find_best_feature_match(trade, feats_for_sym, used_ids)
-        if best_feat is None:
-            unmatched_trades += 1
-            continue
+        for trade in remaining_trades:
+            sym = str(trade.get("symbol", "")).upper().strip()
+            if not sym:
+                fallback_unmatched += 1
+                continue
 
-        row = _merge_feature_and_trade(best_feat, trade)
-        merged.append(row)
+            feats_for_sym = by_sym.get(sym)
+            if not feats_for_sym:
+                fallback_unmatched += 1
+                continue
+
+            best_feat = _find_best_feature_match(trade, feats_for_sym, used_ids)
+            if best_feat is None:
+                fallback_unmatched += 1
+                continue
+
+            merged.append(_merge_feature_and_trade(best_feat, trade))
 
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     with OUTPUT_PATH.open("wb") as f:
@@ -339,7 +380,8 @@ def build_memory() -> None:
             f.write(orjson.dumps(row) + b"\n")
 
     print(f"[setup_memory] Merged {len(merged)} trades into {OUTPUT_PATH}.")
-    print(f"[setup_memory] Unmatched trades: {unmatched_trades}")
+    print(f"[setup_memory] Matched via order_link_id: {matched_by_link}")
+    print(f"[setup_memory] Fallback unmatched trades (symbol+time failed): {fallback_unmatched}")
     print(f"[setup_memory] Done.")
 
 
