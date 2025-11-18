@@ -1,28 +1,34 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Flashback — Auto Executor v2 (Strategy-aware, multi-sub, AI-gated)
+Flashback — Auto Executor v2 (Strategy-aware, multi-sub, AI-gated, policy-aware)
 
 Purpose
 -------
 - Consume signals from an append-only JSONL file (signals/observed.jsonl).
 - For EACH strategy defined in config/strategies.yaml:
-    • Check symbol + timeframe match via strategy registry (app.core.strategies).
-    • Check enabled + automation mode (OFF / LEARN_DRY / LIVE_CANARY / LIVE_FULL).
-    • Run AI gating (trade_classifier) — soft-fail, never crash executor.
+    • Check symbol + timeframe match via strategy_gate.
+    • Check enabled + automation mode.
+    • Run AI gating (classifier + min-score policy).
     • Run correlation gate.
-    • Size entries using a simple % of equity per strategy.
-    • Log rich feature context via feature_store.log_features for AI memory,
-      INCLUDING order_link_id where applicable.
-    • Place live entries only for LIVE_* strategies, tagging each order
-      with a strategy-aware orderLinkId so downstream bots can attribute
-      PnL / risk to the correct logical subaccount.
-- TP/SL handled by separate bot (tp_manager).
+    • Size entries (bayesian + risk_capped, policy-adjusted risk).
+    • Log feature snapshot for setup memory.
+    • Place live or paper entries depending on automation_mode.
+
+Automation modes
+----------------
+- OFF         : ignore strategy.
+- LEARN_DRY   : run AI + logging, NO live orders (paper / learning only).
+- LIVE_CANARY : live orders with small risk (as per strategies.yaml + policy).
+- LIVE_FULL   : normal live trading (once proven).
+
+Exits:
+- TP/SL handled by a separate bot (tp_sl_manager).
 
 Notes
 -----
-- This executor is stateless across runs except for the cursor file.
-- Strategy rules live in config/strategies.yaml and app.core.strategies.
+- Stateless across runs except for the cursor file.
+- Strategy definitions live in config/strategies.yaml.
 """
 
 from __future__ import annotations
@@ -32,7 +38,7 @@ import asyncio
 import time
 from decimal import Decimal
 from pathlib import Path
-from typing import Dict, Optional, List, Any
+from typing import Dict, Optional, Tuple, List, Any
 
 from app.core.config import settings
 from app.core.logger import get_logger, bind_context
@@ -41,11 +47,17 @@ from app.core.notifier_bot import tg_send
 from app.core.feature_store import log_features
 from app.core.trade_classifier import classify as classify_trade
 from app.core.corr_gate_v2 import allow as corr_allow
+from app.core.sizing import bayesian_size, risk_capped_qty
+from app.core.strategy_gate import (
+    get_strategies_for_signal,
+    strategy_label,
+    strategy_risk_pct,
+)
 from app.core.portfolio_guard import can_open_trade
 from app.core.flashback_common import get_equity_usdt
 
-# Strategy registry
-from app.core.strategies import ai_strategies_for_signal, Strategy
+from app.ai.setup_memory_policy import get_risk_multiplier, get_min_ai_score
+
 
 log = get_logger("executor_v2")
 
@@ -88,28 +100,85 @@ def get_trade_client() -> Bybit:
     return _BYBIT_TRADE_CLIENT
 
 
-# ---------- ORDER TAGGING ---------- #
+# ---------- AI GATE WRAPPER ---------- #
 
-def build_order_link_id(strat: Strategy, symbol: str, mode: str) -> str:
+def run_ai_gate(signal: Dict[str, Any], strat_id: str, bound_log) -> Dict[str, Any]:
     """
-    Build a strategy-aware orderLinkId, so we can attribute trades later.
+    Unified wrapper around trade_classifier + policy threshold.
 
-    Format (<= 36 chars for Bybit safety), e.g.:
-        FBv2-S315-BTC-1731901234567
-
-    Where:
-      - "FBv2"         : Flashback v2 tag
-      - "S315"         : last 3 digits of sub_uid
-      - "BTC"          : symbol prefix
-      - timestamp_ms   : uniqueness
+    Returns a dict with at least:
+      {
+        "allow": bool,
+        "score": float | None,
+        "reason": str,
+        "features": dict
+      }
     """
-    ts = int(time.time() * 1000)
+    # 1) Classifier itself
+    try:
+        clf = classify_trade(signal, strat_id)
+    except Exception as e:
+        bound_log.warning(
+            "AI classifier crashed or misbehaved for [%s]: %r — bypassing gate (allow=True).",
+            strat_id,
+            e,
+        )
+        return {
+            "allow": True,
+            "score": None,
+            "reason": f"classifier_error: {e}",
+            "features": {},
+        }
 
-    sub_suffix = str(strat.sub_uid)[-3:] if strat.sub_uid else "XXX"
-    sym_prefix = symbol.replace("USDT", "").replace("USDC", "")[:4]
+    if not isinstance(clf, dict):
+        bound_log.warning(
+            "AI classifier returned non-dict for [%s]: %r — treating as allow=True.",
+            strat_id,
+            clf,
+        )
+        return {
+            "allow": True,
+            "score": None,
+            "reason": "classifier_non_dict",
+            "features": {},
+        }
 
-    base = f"FBv2-S{sub_suffix}-{sym_prefix}-{ts}"
-    return base[:36]
+    allow = bool(clf.get("allow", True))
+    score = clf.get("score")
+    reason = clf.get("reason") or clf.get("why") or "ok"
+    features = clf.get("features") or {}
+
+    # 2) Policy-based min score per strategy
+    min_score = get_min_ai_score(strat_id)
+    score_f: Optional[float]
+    try:
+        score_f = float(score) if score is not None else None
+    except Exception:
+        score_f = None
+
+    if min_score > 0 and score_f is not None and score_f < min_score:
+        bound_log.info(
+            "AI score %.3f < min threshold %.3f for [%s]; rejecting trade.",
+            score_f,
+            min_score,
+            strat_id,
+        )
+        return {
+            "allow": False,
+            "score": score_f,
+            "reason": f"score_below_min ({score_f:.3f} < {min_score:.3f})",
+            "features": features,
+        }
+
+    if not allow:
+        bound_log.info("AI gate rejected [%s]: %s", strat_id, reason)
+
+    return {
+        "allow": allow,
+        "score": score_f,
+        "reason": reason,
+        "features": features,
+    }
 
 
 # ---------- SIGNAL PROCESSOR ---------- #
@@ -122,75 +191,78 @@ async def process_signal_line(line: str) -> None:
         return
 
     symbol = sig.get("symbol")
-    tf = sig.get("timeframe")
+    tf = sig.get("timeframe") or sig.get("tf")
     if not symbol or not tf:
         return
 
-    # Find strategies that want this signal (LEARN_DRY + LIVE_*)
-    strategies: List[Strategy] = ai_strategies_for_signal(symbol, tf)
+    # Find strategies that want this signal
+    strategies = get_strategies_for_signal(symbol, tf)
     if not strategies:
         return
 
-    for strat in strategies:
+    for strat_name, strat_cfg in strategies.items():
         try:
-            await handle_strategy_signal(strat, sig)
+            await handle_strategy_signal(strat_name, strat_cfg, sig)
         except Exception as e:
-            log.exception("Strategy error (%s): %r", strat.id, e)
+            log.exception("Strategy error (%s): %r", strat_name, e)
 
 
 # ---------- STRATEGY PROCESSOR ---------- #
 
+def _automation_mode_from_cfg(cfg: Dict[str, Any]) -> str:
+    mode = str(cfg.get("automation_mode", "OFF")).upper().strip()
+    if mode not in ("OFF", "LEARN_DRY", "LIVE_CANARY", "LIVE_FULL"):
+        mode = "OFF"
+    return mode
+
+
 async def handle_strategy_signal(
-    strat: Strategy,
+    strat_name: str,
+    strat_cfg: Dict[str, Any],
     sig: Dict[str, Any],
 ) -> None:
-    """
-    Handle a single signal for a single Strategy object.
+    strat_id = strategy_label(strat_cfg)  # e.g. "Sub2_Breakout(524633243)"
+    bound = bind_context(log, strat=strat_id)
 
-    Modes:
-      - OFF        -> ignored
-      - LEARN_DRY  -> AI + sizing + feature logging, PAPER only
-      - LIVE_CANARY / LIVE_FULL -> AI + sizing + feature logging + LIVE orders
-    """
-    bound = bind_context(log, strat=strat.id)
+    enabled = bool(strat_cfg.get("enabled", False))
+    mode_raw = _automation_mode_from_cfg(strat_cfg)
 
-    if not strat.enabled:
-        bound.debug("strategy disabled (enabled=false)")
-        return
-
-    mode = str(strat.automation_mode or "OFF").upper().strip()
-    if mode == "OFF":
-        bound.debug("automation_mode=OFF; ignoring signal")
+    if not enabled or mode_raw == "OFF":
+        bound.debug("strategy disabled or automation_mode=OFF")
         return
 
     symbol = sig.get("symbol")
-    tf = sig.get("timeframe")
+    tf = sig.get("timeframe") or sig.get("tf")
     side = sig.get("side")
-    price_val = sig.get("price", 0) or 0
-    price = float(price_val)
+    price = sig.get("price") or sig.get("last") or sig.get("close")
+    ts = sig.get("ts") or sig.get("timestamp")
 
-    if not symbol or not tf or not side:
+    if not symbol or not tf or not side or price is None:
         bound.warning("missing required fields in signal: %r", sig)
         return
 
-    # --- AI Classifier Gate (soft-fail) ---
     try:
-        clf = classify_trade(sig, strat.id)
-        if not isinstance(clf, dict):
-            raise TypeError(f"classifier returned {type(clf)}")
-    except Exception as e:
-        bound.warning(
-            "AI classifier crashed or misbehaved for [%s]: %r — bypassing gate (allow=True).",
-            strat.id,
-            e,
-        )
-        clf = {"allow": True, "reason": f"ai_error_bypassed: {e}"}
-
-    if not clf.get("allow"):
-        bound.info("AI gate rejected: %s", clf.get("reason"))
+        price_f = float(price)
+    except Exception:
+        bound.warning("invalid price in signal: %r", sig)
         return
 
-    # --- Correlation gate ---
+    # Normalize mode for feature logging
+    if mode_raw == "LEARN_DRY":
+        trade_mode = "PAPER"
+    elif mode_raw == "LIVE_CANARY":
+        trade_mode = "LIVE_CANARY"
+    elif mode_raw == "LIVE_FULL":
+        trade_mode = "LIVE_FULL"
+    else:
+        trade_mode = mode_raw
+
+    # ---------- AI Classifier + Policy Gate ---------- #
+    ai = run_ai_gate(sig, strat_id, bound)
+    if not ai["allow"]:
+        return
+
+    # ---------- Correlation gate (unpack (allowed, reason)) ---------- #
     try:
         allowed_corr, corr_reason = corr_allow(symbol)
     except Exception as e:
@@ -201,131 +273,173 @@ async def handle_strategy_signal(
         bound.info("Correlation gate rejected for %s: %s", symbol, corr_reason)
         return
 
-    # --- Sizing: simple % of equity per strategy ---
+    # ---------- Sizing + Risk Policy ---------- #
+    # Strategy risk (% of equity per trade, or fraction) from YAML
     try:
-        if price <= 0:
-            bound.info("price <= 0; skipping sizing for %s", symbol)
-            return
+        base_risk_pct = Decimal(str(strategy_risk_pct(strat_cfg)))
+    except Exception:
+        base_risk_pct = Decimal("0")
 
-        try:
-            equity_usd = Decimal(str(get_equity_usdt()))
-        except Exception as e:
-            bound.error("get_equity_usdt error: %r", e)
-            return
+    # Policy multiplier per strategy
+    risk_mult = Decimal(str(get_risk_multiplier(strat_id)))
+    eff_risk_pct = base_risk_pct * risk_mult
 
-        risk_pct_val = Decimal(str(strat.risk_per_trade_pct or 0))
-        if risk_pct_val <= 0:
-            bound.info(
-                "risk_per_trade_pct <= 0 for %s; skipping entry.", strat.id
-            )
-            return
+    if eff_risk_pct <= 0:
+        bound.info("effective risk_pct <= 0 for %s; skipping.", strat_id)
+        return
 
-        # Interpret risk_per_trade_pct as percent, e.g. 0.25 -> 0.25%
-        risk_frac = risk_pct_val / Decimal("100")
-        notional_usd = (equity_usd * risk_frac).quantize(Decimal("0.01"))
-
-        if notional_usd <= 0:
-            bound.info(
-                "notional_usd <= 0 after sizing for %s; equity=%s risk_pct=%s",
-                strat.id,
-                equity_usd,
-                risk_pct_val,
-            )
-            return
-
-        qty = (notional_usd / Decimal(str(price))).quantize(Decimal("0.0001"))
+    # Fetch current equity (MAIN unified)
+    try:
+        equity_val = Decimal(str(get_equity_usdt()))
     except Exception as e:
-        bound.error("sizing error: %r", e)
-        return
+        bound.warning("get_equity_usdt failed: %r; assuming equity=0.", e)
+        equity_val = Decimal("0")
 
-    if qty <= 0:
-        bound.info("qty <= 0 after sizing; skipping entry. notional=%s", notional_usd)
-        return
-
-    # --- Build order_link_id ONCE, for both logging & live orders ---
-    order_link_id = build_order_link_id(strat, symbol, mode)
-
-    # --- Feature logging for AI memory (best-effort) ---
+    # If equity is non-positive, we still go through motions for testing,
+    # but sizing will naturally produce no trades.
+    # bayesian_size is assumed to return (notional_usd, stop_distance)
     try:
-        ai_score = clf.get("score") or clf.get("confidence") or 1.0
-        ai_reason = str(clf.get("reason", ""))
-        features = clf.get("features") or {}
-
-        log_features(
-            sub_uid=str(strat.sub_uid),
-            strategy=strat.role or strat.name,
-            strategy_id=strat.id,
+        notional_usd, stop_distance = bayesian_size(
             symbol=symbol,
             side=side,
-            mode=mode,
-            equity_usd=equity_usd,
-            risk_usd=notional_usd,
-            risk_pct=risk_pct_val,
-            ai_score=float(ai_score),
-            ai_reason=ai_reason,
+            price=price_f,
+            strategy_id=strat_id,
+        )
+    except TypeError:
+        # Backward-compat: older signature bayesian_size(symbol, side, price)
+        notional_usd, stop_distance = bayesian_size(symbol, side, price_f)
+
+    try:
+        notional_dec = Decimal(str(notional_usd))
+    except Exception:
+        notional_dec = Decimal("0")
+
+    if notional_dec <= 0:
+        bound.info(
+            "notional_usd <= 0 after bayesian_size for %s; equity=%s risk_pct=%s",
+            strat_id,
+            equity_val,
+            eff_risk_pct,
+        )
+        return
+
+    # Risk-capped quantity, using effective risk %
+    try:
+        qty = risk_capped_qty(
+            symbol=symbol,
+            notional_usd=notional_dec,
+            equity_usd=equity_val,
+            max_risk_pct=eff_risk_pct,
+            stop_distance=stop_distance,
+        )
+    except TypeError:
+        # Backward-compat: older signature risk_capped_qty(symbol, raw_qty)
+        qty = risk_capped_qty(symbol, notional_dec)
+
+    try:
+        qty_dec = Decimal(str(qty))
+    except Exception:
+        qty_dec = Decimal("0")
+
+    if qty_dec <= 0:
+        bound.info(
+            "qty <= 0 after sizing; skipping entry. notional_usd=%s equity=%s risk_pct=%s",
+            notional_dec,
+            equity_val,
+            eff_risk_pct,
+        )
+        return
+
+    # Approximate risk in USD (for logging / memory)
+    # If eff_risk_pct is a fraction of equity (e.g. 0.002 = 0.2%), this is exact.
+    # If it's already a %, it's just scaled, still directionally useful.
+    try:
+        risk_usd = equity_val * eff_risk_pct
+    except Exception:
+        risk_usd = Decimal("0")
+
+    # Optional: Portfolio guard
+    try:
+        guard_ok, guard_reason = can_open_trade(symbol, float(risk_usd))
+    except TypeError:
+        # older implementations may just return bool
+        try:
+            guard_ok = bool(can_open_trade(symbol, float(risk_usd)))
+            guard_reason = "legacy_bool_guard"
+        except Exception as e:
+            bound.warning("Portfolio guard failed for %s: %r; bypassing.", symbol, e)
+            guard_ok, guard_reason = True, "guard_exception_bypass"
+    except Exception as e:
+        bound.warning("Portfolio guard failed for %s: %r; bypassing.", symbol, e)
+        guard_ok, guard_reason = True, "guard_exception_bypass"
+
+    if not guard_ok:
+        bound.info("Portfolio guard blocked trade for %s: %s", symbol, guard_reason)
+        return
+
+    # ---------- Feature logging (for setup memory) ---------- #
+    try:
+        ai_score = ai.get("score")
+        ai_reason = ai.get("reason", "")
+        features = ai.get("features") or {}
+
+        sub_uid = str(strat_cfg.get("sub_uid") or "")
+        log_features(
+            sub_uid=sub_uid,
+            strategy=strat_cfg.get("name", strat_name),
+            strategy_id=strat_id,
+            symbol=symbol,
+            side=side,
+            mode=trade_mode,
+            equity_usd=equity_val,
+            risk_usd=risk_usd,
+            risk_pct=eff_risk_pct,
+            ai_score=float(ai_score) if ai_score is not None else 0.0,
+            ai_reason=str(ai_reason),
             features=features,
             signal=sig,
-            order_link_id=order_link_id,
         )
     except Exception as e:
         bound.warning("feature logging failed: %r", e)
 
-    # LIVE vs PAPER behaviour based on strategy.automation_mode
-    if strat.can_trade_live:
+    # ---------- Execute or paper log ---------- #
+    if mode_raw in ("LIVE_CANARY", "LIVE_FULL"):
         await execute_entry(
             symbol=symbol,
             side=side,
-            qty=float(qty),
-            price=price,
-            strat=strat,
-            mode=mode,
-            order_link_id=order_link_id,
+            qty=float(qty_dec),
+            price=price_f,
+            strat=strat_id,
+            mode=trade_mode,
             bound_log=bound,
         )
     else:
         bound.info(
-            "PAPER entry (%s): %s %s qty=%s @ ~%s | linkId=%s",
-            mode,
+            "PAPER entry [%s]: %s %s qty=%s @ ~%s (risk_mult=%.2f)",
+            strat_id,
             symbol,
             side,
-            qty,
-            price,
-            order_link_id,
+            qty_dec,
+            price_f,
+            float(risk_mult),
         )
 
 
 # ---------- EXECUTOR ---------- #
 
 async def execute_entry(
-    *,
     symbol: str,
     side: str,
     qty: float,
     price: float,
-    strat: Strategy,
+    strat: str,
     mode: str,
-    order_link_id: str,
     bound_log,
 ) -> None:
-    """
-    Place a LIVE order for a given strategy.
-
-    Uses existing Bybit client and places a linear Market order.
-    Tags each order with orderLinkId so downstream bots / journaling
-    can attribute it back to (sub_uid, strategy_id).
-    """
-    # Optional: portfolio guard hook
-    try:
-        if not can_open_trade(symbol):
-            bound_log.info("Portfolio guard blocked new trade on %s", symbol)
-            return
-    except TypeError:
-        # Signature mismatch, ignore for now rather than crash
-        pass
-    except Exception as e:
-        bound_log.warning("portfolio_guard.can_open_trade error: %r; continuing without it", e)
-
     client = get_trade_client()
+    # Unique orderLinkId so journal + setup_memory can join reliably
+    order_link_id = f"{strat}-{int(time.time() * 1000)}"
+
     try:
         resp = client.place_order(
             category="linear",
@@ -336,30 +450,28 @@ async def execute_entry(
             orderLinkId=order_link_id,
         )
         bound_log.info(
-            "LIVE entry executed [%s | mode=%s]: %s %s qty=%s linkId=%s resp=%r",
-            strat.id,
+            "LIVE entry executed [%s %s]: %s %s qty=%s resp=%r",
             mode,
+            strat,
             symbol,
             side,
             qty,
-            order_link_id,
             resp,
         )
         try:
             tg_send(
-                f"🚀 Entry placed [{strat.id}] {symbol} {side} qty={qty} "
-                f"mode={mode} linkId={order_link_id}"
+                f"🚀 Entry placed [{mode}/{strat}] {symbol} {side} qty={qty} "
+                f"linkId={order_link_id}"
             )
         except Exception as e:
             bound_log.warning("telegram send failed: %r", e)
     except Exception as e:
         bound_log.error(
-            "order failed for [%s] %s %s qty=%s linkId=%s: %r",
-            strat.id,
+            "order failed for %s %s qty=%s (strat=%s): %r",
             symbol,
             side,
             qty,
-            order_link_id,
+            strat,
             e,
         )
 
@@ -396,7 +508,11 @@ async def executor_loop() -> None:
                     try:
                         line = raw.decode("utf-8").strip()
                     except Exception as e:
-                        log.warning("executor_v2: failed to decode line at pos=%s: %r", pos, e)
+                        log.warning(
+                            "executor_v2: failed to decode line at pos=%s: %r",
+                            pos,
+                            e,
+                        )
                         continue
 
                     if not line:

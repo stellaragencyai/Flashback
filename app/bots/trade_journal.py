@@ -1,5 +1,5 @@
 # app/bots/trade_journal.py
-# Flashback — Trade Journal (Main, v4.0 — WS-driven, cleaner notifications + trade rating + guard-aware)
+# Flashback — Trade Journal (Main, v4.1 — WS-driven, cleaner notifications + trade rating + guard-aware)
 #
 # What it does (NOW WS-BASED)
 # - Consumes executions from state/ws_executions.jsonl (written by ws_switchboard).
@@ -91,7 +91,7 @@ EXEC_BUS_PATH  = STATE_DIR / "ws_executions.jsonl"
 
 # Journal metadata
 ACCOUNT_LABEL     = "MAIN"
-JOURNAL_VERSION   = 40  # 4.0: WS-driven + cursor offset
+JOURNAL_VERSION   = 41  # 4.1: WS-driven + cursor offset + nicer PnL + resilience
 
 # Use dedicated journal notifier channel
 tg = get_notifier("journal")
@@ -185,6 +185,22 @@ def _fmt_usd_str(x: Optional[str]) -> str:
     if x is None:
         return "n/a"
     return f"{x} usd"
+
+
+def _fmt_pnl(x: Any, places: int = 2) -> str:
+    """
+    Format PnL as $X.XX with limited decimals.
+    Accepts Decimal / str / float / int / None.
+    """
+    if x is None:
+        return "$0.00"
+    try:
+        d = Decimal(str(x))
+    except Exception:
+        return "$0.00"
+    q = Decimal("1").scaleb(-places)
+    d = d.quantize(q, rounding=ROUND_DOWN)
+    return f"${d}"
 
 # ---------- grid inference (fallback if TPs not yet visible) ----------
 
@@ -392,43 +408,67 @@ def _notify_new_trade(snap: dict) -> None:
 
     msg_lines = [
         "🟢 NEW TRADE",
-        f"{symbol} {direction}",
-        f"Entry: {entry} | Size: {size} | Lev: {lev}",
-        f"SL: {sl} | Risk: {risk} | RR≈{rr}",
-        f"Potential: {pot}",
-        f"TPs: {tps_str}",
+        "",
+        f"📊 {symbol} {direction}",
+        "",
+        f"📥 Entry: {entry}",
+        f"📏 Size: {size}",
+        f"⚖️ Lev: {lev}",
+        "",
+        f"🛡 SL: {sl}",
+        f"💸 Risk: {risk}",
+        f"📈 RR≈{rr}",
+        "",
+        f"🎯 TPs: {tps_str}",
     ]
     if order_link_id:
-        msg_lines.append(f"LinkId: {order_link_id}")
+        msg_lines.append("")
+        msg_lines.append(f"🔗 LinkId: {order_link_id}")
 
     msg = "\n".join(msg_lines)
     tg.trade(msg)
 
 
 def _notify_entry_fill(symbol: str, side: str, qty: Decimal, px: Decimal, pos_size: Decimal) -> None:
-    msg = (
-        f"🟢 FILL (entry/add)\n"
-        f"{symbol} {side} {qty} @ {px}\n"
-        f"Position size: {pos_size}"
-    )
+    msg_lines = [
+        "🟢 FILL (entry/add)",
+        "",
+        f"📊 {symbol} {side}",
+        "",
+        f"📥 Qty: {qty} @ {px}",
+        f"📌 Position size: {pos_size}",
+    ]
+    msg = "\n".join(msg_lines)
     tg.trade(msg)
 
 
 def _notify_add(symbol: str, side: str, qty: Decimal, px: Decimal, pos_size: Decimal, adds: int) -> None:
-    msg = (
-        f"➕ ADD POSITION\n"
-        f"{symbol} {side} {qty} @ {px}\n"
-        f"Size now: {pos_size} | Adds: {adds}"
-    )
+    msg_lines = [
+        "➕ ADD POSITION",
+        "",
+        f"📊 {symbol} {side}",
+        "",
+        f"📥 Qty: {qty} @ {px}",
+        f"📌 Size now: {pos_size}",
+        "",
+        f"🔁 Adds: {adds}",
+    ]
+    msg = "\n".join(msg_lines)
     tg.trade(msg)
 
 
 def _notify_partial(symbol: str, side: str, qty: Decimal, px: Decimal, pos_size: Decimal, partials: int) -> None:
-    msg = (
-        f"➖ PARTIAL CLOSE\n"
-        f"{symbol} {side} {qty} @ {px}\n"
-        f"Remaining size: {pos_size} | Partials: {partials}"
-    )
+    msg_lines = [
+        "➖ PARTIAL CLOSE",
+        "",
+        f"📊 {symbol} {side}",
+        "",
+        f"📤 Closed: {qty} @ {px}",
+        f"📌 Remaining size: {pos_size}",
+        "",
+        f"🔁 Partials: {partials}",
+    ]
+    msg = "\n".join(msg_lines)
     tg.trade(msg)
 
 
@@ -440,7 +480,7 @@ def _notify_close_summary(
 ) -> None:
     sym = row.get("symbol", "?")
     direction = row.get("direction", row.get("side", "?"))
-    pnl = row.get("realized_pnl")
+    pnl_raw = row.get("realized_pnl")
     rr = row.get("realized_rr")
     dur = row.get("duration_human")
     eq_open = row.get("equity_at_open")
@@ -448,6 +488,10 @@ def _notify_close_summary(
     rating = row.get("rating_score")
     result = row.get("result", "UNKNOWN")
     order_link_id = row.get("order_link_id")
+
+    # PnL formatting with $ and limited decimals
+    pnl_str = _fmt_pnl(pnl_raw, places=2)
+    rr_str = rr if rr is not None else "n/a"
 
     if result == "WIN":
         flag = "✅"
@@ -462,15 +506,22 @@ def _notify_close_summary(
 
     msg_lines = [
         f"🔴 TRADE CLOSED {flag}",
-        f"{sym} {direction}",
-        f"PnL: {pnl} usd | RR: {rr}",
-        f"Duration: {dur}",
-        f"Equity: {eq_open} → {eq_after}",
-        f"Adds: {num_adds} | Partials: {num_partials}",
-        f"Rating: {rating}/10 | Guard: {guard_flag}",
+        "",
+        f"📊 {sym} {direction}",
+        "",
+        f"💰 PnL: {pnl_str} | RR: {rr_str}",
+        "",
+        f"⏱ Duration: {dur}",
+        "",
+        f"💼 Equity: {eq_open} → {eq_after}",
+        "",
+        f"📌 Adds: {num_adds} | Partials: {num_partials}",
+        "",
+        f"⭐ Rating: {rating}/10 | Guard: {guard_flag}",
     ]
     if order_link_id:
-        msg_lines.append(f"LinkId: {order_link_id}")
+        msg_lines.append("")
+        msg_lines.append(f"🔗 LinkId: {order_link_id}")
 
     msg = "\n".join(msg_lines)
     tg.trade(msg)
@@ -584,7 +635,7 @@ def _iter_new_exec_rows_for_main(start_pos: int) -> Tuple[List[dict], int]:
 # ---------- main loop ----------
 
 def loop():
-    tg.info("📝 Flashback Trade Journal v4.0 (WS-driven, guard-aware, clean output) started.")
+    tg.info("📝 Flashback Trade Journal v4.1 (WS-driven, guard-aware, clean output) started.")
     open_state: Dict[str, dict] = _load_open_state()
     cursor_pos: int = _load_cursor_pos()
 
@@ -605,6 +656,7 @@ def loop():
         if sym not in open_state:
             try:
                 entry = Decimal(str(p["avgPrice"]))
+
                 size  = Decimal(str(p["size"]))
             except Exception:
                 continue
@@ -834,7 +886,8 @@ def loop():
                             portfolio_guard.record_pnl(pnl)  # type: ignore[arg-type]
                             guard_applied = True
                         except Exception as _e:
-                            tg.error(f"[Journal] Failed to update Portfolio Guard with pnl {pnl}: {_e}")
+                            # log locally only; do not call telegram in error path
+                            print(f"[Journal] Failed to update Portfolio Guard with pnl {pnl}: {_e}")
 
                     row: Dict[str, Any] = {
                         **open_row,
@@ -864,10 +917,18 @@ def loop():
             time.sleep(POLL_SECONDS)
 
         except Exception as e:
+            # Do NOT call Telegram here, or we can crash again from notifier failures.
             tb = traceback.format_exc()
-            tg.error(f"[Journal] {e}\n{tb}")
+            print(f"[Journal] ERROR in loop: {e}\n{tb}")
             time.sleep(5)
 
 
 if __name__ == "__main__":
-    loop()
+    # Outer guard: if loop() ever dies unexpectedly, auto-restart after delay.
+    while True:
+        try:
+            loop()
+        except Exception as e:
+            tb = traceback.format_exc()
+            print(f"[Journal] FATAL: loop() crashed: {e}\n{tb}")
+            time.sleep(5)
