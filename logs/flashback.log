@@ -80,3 +80,26 @@ OSError: telling position disabled by next() call
 2025-11-17 23:09:32,400 [INFO] [equity_drip_bot] 💧 Flashback Equity Drip Bot ONLINE | State file: C:\Users\nolan\Desktop\Flashback\state\drip_state.json | Poll: 6s | CATEGORY=linear | DRIP_PCT raw=0.15 → effective=0.15 | Round-robin UIDs (10): 524630315, 524633243, 524634622, 524636309, 524637467, 524638768, 524649709, 524650929, 524693375, 524700541
 2025-11-17 23:09:32,421 [INFO] [executor_v2] executor_v2 starting at cursor=186
 2025-11-18 03:14:14,564 [INFO] [executor_v2] executor_v2 stopped by user
+2025-11-18 03:15:00,548 [INFO] [equity_drip_bot] Equity Drip Bot starting in standalone mode...
+2025-11-18 03:15:00,579 [INFO] [executor_v2] executor_v2 starting at cursor=186
+2025-11-18 03:15:00,585 [INFO] [ws_switchboard_bot] WS Switchboard Bot starting (root=C:\Users\nolan\Desktop\Flashback, env=C:\Users\nolan\Desktop\Flashback\.env)
+2025-11-18 03:15:00,585 [INFO] [ws_switchboard_bot] Execution bus path: C:\Users\nolan\Desktop\Flashback\state\ws_executions.jsonl
+2025-11-18 03:15:00,585 [INFO] [ws_switchboard] WS[main] account added to switchboard
+2025-11-18 03:15:00,585 [INFO] [ws_switchboard_bot] Subaccount flashback01 has no WS creds; skipping.
+2025-11-18 03:15:00,585 [INFO] [ws_switchboard_bot] Subaccount flashback02 has no WS creds; skipping.
+2025-11-18 03:15:00,585 [INFO] [ws_switchboard_bot] Subaccount flashback03 has no WS creds; skipping.
+2025-11-18 03:15:00,585 [INFO] [ws_switchboard_bot] Subaccount flashback04 has no WS creds; skipping.
+2025-11-18 03:15:00,585 [INFO] [ws_switchboard_bot] Subaccount flashback05 has no WS creds; skipping.
+2025-11-18 03:15:00,585 [INFO] [ws_switchboard_bot] Subaccount flashback06 has no WS creds; skipping.
+2025-11-18 03:15:00,585 [INFO] [ws_switchboard_bot] Subaccount flashback07 has no WS creds; skipping.
+2025-11-18 03:15:00,585 [INFO] [ws_switchboard_bot] Subaccount flashback08 has no WS creds; skipping.
+2025-11-18 03:15:00,585 [INFO] [ws_switchboard_bot] Subaccount flashback09 has no WS creds; skipping.
+2025-11-18 03:15:00,585 [INFO] [ws_switchboard_bot] Subaccount flashback10 has no WS creds; skipping.
+2025-11-18 03:15:00,558 [INFO] [equity_drip_bot] 💧 Flashback Equity Drip Bot ONLINE | State file: C:\Users\nolan\Desktop\Flashback\state\drip_state.json | Poll: 6s | CATEGORY=linear | DRIP_PCT raw=0.15 → effective=0.15 | Mode: single-sub (DRIP_SINGLE_SUB_UID=524633243) | Target UIDs (1): 524633243
+2025-11-18 03:15:01,169 [INFO] [ws_switchboard] WS[main] launching run_forever task
+2025-11-18 03:15:01,169 [INFO] [ws_switchboard] WS[main] run_forever started
+2025-11-18 03:15:01,169 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 03:15:02,633 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 03:15:02,920 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 03:15:02,920 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 03:15:03,220 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2a4avpdcjmg2d3kk0qg-22zpbl'}

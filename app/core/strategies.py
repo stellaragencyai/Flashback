@@ -1,153 +1,251 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Flashback — Strategy Registry
+app.core.strategies
 
-Central access point for per-subaccount strategy config.
+Flashback — Strategy Registry Loader & Gate
 
-Reads:
-    STRATEGY_CONFIG_PATH (from .env, defaults to config/strategies.yaml)
-    SUB_LABELS          (from .env, e.g.
-                         524630315:Sub1_Trend,524633243:Sub2_BO,...)
+- Loads config/strategies.yaml
+- Normalizes "subaccounts" entries into Strategy objects
+- Provides helper functions for:
+    * listing all strategies
+    * looking up strategies by symbol / timeframe
+    * deciding which strategies are allowed to trade LIVE vs LEARN_DRY
 
-Exposes:
-    all_sub_strategies()          -> List[dict]
-    get_strategy_for_sub(sub_uid) -> Optional[dict]
-    get_strategy_by_name(name)    -> Optional[dict]
-    all_sub_uids()                -> List[str]
-    get_sub_label(sub_uid)        -> str
+YAML shape (your current file):
+
+version: 1
+notes: |
+  ...
+subaccounts:
+  - sub_uid: 524630315
+    name: Sub1_Trend
+    role: trend_follow
+    enabled: true
+    symbols: [BTCUSDT, ETHUSDT, SOLUSDT]
+    timeframes: ["15", "60"]
+    risk_per_trade_pct: 0.25
+    max_concurrent_positions: 1
+    ai_profile: trend_v1
+    automation_mode: LEARN_DRY
+    notes: | ...
 """
 
-import os
+from __future__ import annotations
+
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Any, Optional, List
+from typing import List, Dict, Optional, Iterable
 
-import yaml
+import yaml  # make sure PyYAML is installed
 
-# ROOT = project root (.../Flashback)
-ROOT = Path(__file__).resolve().parents[2]
+from app.core.config import settings
+from app.core.logger import get_logger
 
-_CONFIG_PATH = os.getenv("STRATEGY_CONFIG_PATH", "config/strategies.yaml")
-CONFIG_PATH = (ROOT / _CONFIG_PATH).resolve()
+log = get_logger("strategies")
 
-# SUB_LABELS env example:
-#   SUB_LABELS=524630315:Sub1_Trend,524633243:Sub2_BO,...
-_SUB_LABELS_RAW = os.getenv("SUB_LABELS", "")
-
-_cache: Optional[Dict[str, Any]] = None
-_label_map: Optional[Dict[str, str]] = None
+CONFIG_PATH = Path(settings.ROOT) / "config" / "strategies.yaml"
 
 
-def _load() -> Dict[str, Any]:
-    """
-    Load the YAML strategy config once and cache it.
-    """
-    global _cache
-    if _cache is not None:
-        return _cache
+# ---------------------------------------------------------------------------
+# Data model
+# ---------------------------------------------------------------------------
 
+@dataclass
+class Strategy:
+    sub_uid: int
+    name: str
+    role: str
+    enabled: bool
+    symbols: List[str]
+    timeframes: List[str]
+    risk_per_trade_pct: float
+    max_concurrent_positions: int
+    ai_profile: str
+    automation_mode: str
+    raw: Dict  # keep raw dict for extra fields (notes, etc.)
+
+    @property
+    def id(self) -> str:
+        """Human-friendly id used in logs."""
+        return f"{self.name}({self.sub_uid})"
+
+    @property
+    def is_off(self) -> bool:
+        return self.automation_mode.upper() == "OFF"
+
+    @property
+    def is_learn_dry(self) -> bool:
+        """AI + logging only, no live orders."""
+        return self.automation_mode.upper() == "LEARN_DRY"
+
+    @property
+    def is_live_canary(self) -> bool:
+        """Tiny real trades (your Sub7_Canary)."""
+        return self.automation_mode.upper() == "LIVE_CANARY"
+
+    @property
+    def is_live_full(self) -> bool:
+        """Future full live mode."""
+        return self.automation_mode.upper() == "LIVE_FULL"
+
+    @property
+    def can_trade_live(self) -> bool:
+        """Should executor actually place real orders for this strategy?"""
+        return self.is_live_canary or self.is_live_full
+
+    @property
+    def wants_ai_eval(self) -> bool:
+        """
+        Should this strategy be sent through AI gate / feature logging?
+        LEARN_DRY + LIVE_* both want AI evaluation.
+        """
+        if self.is_off:
+            return False
+        return True  # LEARN_DRY, LIVE_CANARY, LIVE_FULL
+
+
+# ---------------------------------------------------------------------------
+# Load & cache
+# ---------------------------------------------------------------------------
+
+_STRATEGIES_CACHE: Optional[List[Strategy]] = None
+
+
+def _load_yaml() -> Dict:
     if not CONFIG_PATH.exists():
-        # Fail loudly; this is a core part of the organism
-        raise FileNotFoundError(f"Strategy config not found at {CONFIG_PATH}")
-
+        raise FileNotFoundError(f"strategies.yaml not found at {CONFIG_PATH}")
     with CONFIG_PATH.open("r", encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
-
     if not isinstance(data, dict):
-        raise ValueError(f"Strategy config at {CONFIG_PATH} must be a mapping at top level.")
-
-    _cache = data
-    return _cache
+        raise ValueError("strategies.yaml root must be a mapping")
+    return data
 
 
-def all_sub_strategies() -> List[Dict[str, Any]]:
+def _parse_strategies(data: Dict) -> List[Strategy]:
+    subaccounts = data.get("subaccounts") or []
+    if not isinstance(subaccounts, list):
+        raise ValueError("strategies.yaml: 'subaccounts' must be a list")
+
+    strategies: List[Strategy] = []
+    for raw in subaccounts:
+        if not isinstance(raw, dict):
+            continue
+
+        try:
+            sub_uid = int(raw.get("sub_uid"))
+        except Exception:
+            log.warning("Skipping strategy with invalid sub_uid: %r", raw)
+            continue
+
+        name = str(raw.get("name", f"Sub_{sub_uid}"))
+        role = str(raw.get("role", ""))
+        enabled = bool(raw.get("enabled", False))
+
+        symbols_raw = raw.get("symbols") or []
+        timeframes_raw = raw.get("timeframes") or []
+
+        symbols = [str(s).strip().upper() for s in symbols_raw if str(s).strip()]
+        timeframes = [str(tf).strip() for tf in timeframes_raw if str(tf).strip()]
+
+        risk_per_trade_pct = float(raw.get("risk_per_trade_pct", 0.0) or 0.0)
+        max_concurrent_positions = int(raw.get("max_concurrent_positions", 0) or 0)
+        ai_profile = str(raw.get("ai_profile", "") or "")
+        automation_mode = str(raw.get("automation_mode", "OFF") or "OFF").upper()
+
+        s = Strategy(
+            sub_uid=sub_uid,
+            name=name,
+            role=role,
+            enabled=enabled,
+            symbols=symbols,
+            timeframes=timeframes,
+            risk_per_trade_pct=risk_per_trade_pct,
+            max_concurrent_positions=max_concurrent_positions,
+            ai_profile=ai_profile,
+            automation_mode=automation_mode,
+            raw=raw,
+        )
+        strategies.append(s)
+
+    log.info(
+        "Loaded %d strategies from %s (version=%s)",
+        len(strategies),
+        CONFIG_PATH,
+        data.get("version"),
+    )
+    return strategies
+
+
+def _ensure_loaded() -> None:
+    global _STRATEGIES_CACHE
+    if _STRATEGIES_CACHE is None:
+        data = _load_yaml()
+        _STRATEGIES_CACHE = _parse_strategies(data)
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def all_sub_strategies() -> List[Strategy]:
     """
-    Return the raw list of subaccount strategy dictionaries
-    from strategies.yaml under key 'subaccounts'.
+    Return all strategies (including disabled/ OFF ones).
     """
-    cfg = _load()
-    subs = cfg.get("subaccounts", []) or []
-    if not isinstance(subs, list):
-        raise ValueError("`subaccounts` in strategy config must be a list.")
-    return subs
+    _ensure_loaded()
+    return list(_STRATEGIES_CACHE or [])
 
 
-def get_strategy_for_sub(sub_uid: str) -> Optional[Dict[str, Any]]:
+def enabled_strategies() -> List[Strategy]:
     """
-    Return the strategy dict for a given sub_uid (string or int),
-    or None if not found.
+    Return only strategies with enabled == True (regardless of automation_mode).
     """
-    sub_uid_str = str(sub_uid)
-    for strat in all_sub_strategies():
-        if str(strat.get("sub_uid")) == sub_uid_str:
-            return strat
+    return [s for s in all_sub_strategies() if s.enabled]
+
+
+def strategies_for_symbol_timeframe(symbol: str, timeframe: str) -> List[Strategy]:
+    """
+    Return all ENABLED strategies that care about this symbol+timeframe.
+    """
+    sym = symbol.upper()
+    tf = str(timeframe).strip()
+    out: List[Strategy] = []
+
+    for s in enabled_strategies():
+        if sym in s.symbols and tf in s.timeframes:
+            out.append(s)
+
+    return out
+
+
+def live_strategies_for_signal(symbol: str, timeframe: str) -> List[Strategy]:
+    """
+    Return strategies that BOTH:
+      - are enabled
+      - match symbol/timeframe
+      - are in LIVE_CANARY or LIVE_FULL mode (real orders allowed)
+    """
+    return [
+        s
+        for s in strategies_for_symbol_timeframe(symbol, timeframe)
+        if s.can_trade_live
+    ]
+
+
+def ai_strategies_for_signal(symbol: str, timeframe: str) -> List[Strategy]:
+    """
+    Return strategies that should be evaluated by AI gate / feature logging
+    for this symbol+timeframe (LEARN_DRY + LIVE_*).
+    """
+    return [
+        s
+        for s in strategies_for_symbol_timeframe(symbol, timeframe)
+        if s.wants_ai_eval
+    ]
+
+
+def get_strategy_by_sub_uid(sub_uid: int) -> Optional[Strategy]:
+    for s in all_sub_strategies():
+        if s.sub_uid == sub_uid:
+            return s
     return None
-
-
-def get_strategy_by_name(name: str) -> Optional[Dict[str, Any]]:
-    """
-    Lookup a strategy by its 'name' field (e.g., 'Sub1_Trend').
-    Case-sensitive by default.
-    """
-    target = str(name)
-    for strat in all_sub_strategies():
-        if str(strat.get("name")) == target:
-            return strat
-    return None
-
-
-def all_sub_uids() -> List[str]:
-    """
-    Convenience: list all sub_uids defined in strategies.yaml as strings.
-    """
-    uids: List[str] = []
-    for strat in all_sub_strategies():
-        uid = strat.get("sub_uid")
-        if uid is None:
-            continue
-        uids.append(str(uid))
-    return uids
-
-
-def _parse_label_map() -> Dict[str, str]:
-    """
-    Parse SUB_LABELS from the environment into a mapping:
-        { "524630315": "Sub1_Trend", ... }
-    """
-    global _label_map
-    if _label_map is not None:
-        return _label_map
-
-    raw = _SUB_LABELS_RAW.strip()
-    mapping: Dict[str, str] = {}
-    if not raw:
-        _label_map = mapping
-        return mapping
-
-    # Format: "524630315:Sub1_Trend,524633243:Sub2_BO,..."
-    parts = [p.strip() for p in raw.split(",") if p.strip()]
-    for item in parts:
-        if ":" not in item:
-            continue
-        uid_str, label = item.split(":", 1)
-        uid_str = uid_str.strip()
-        label = label.strip()
-        if not uid_str or not label:
-            continue
-        mapping[uid_str] = label
-
-    _label_map = mapping
-    return mapping
-
-
-def get_sub_label(sub_uid: str) -> str:
-    """
-    Get a human-readable label for a sub_uid, using SUB_LABELS from .env
-    if available, otherwise fall back to 'sub-<uid>'.
-    """
-    uid_str = str(sub_uid)
-    mapping = _parse_label_map()
-    label = mapping.get(uid_str)
-    if label:
-        return label
-    return f"sub-{uid_str}"
