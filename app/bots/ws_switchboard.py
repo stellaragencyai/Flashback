@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Flashback — WS Switchboard Bot
+Flashback — WS Switchboard Bot (v2 — exec bus + normalized event bus)
 
 What this bot does:
 - Loads API keys for MAIN + flashback01..flashback10 from .env
@@ -11,13 +11,47 @@ What this bot does:
     • position
 - Logs incoming events with labels.
 - Sends concise Telegram messages on FULL LIMIT fills (per account).
-- Appends EVERY execution row to a JSONL bus:
+- Appends EVERY execution row to a JSONL exec bus:
     state/ws_executions.jsonl
+- ALSO appends normalized events to a central event bus:
+    state/event_bus.jsonl
 
-This is the wiring layer:
-- Purely observational in terms of market (no order placement).
-- Becomes the single source of truth for executions for other bots
-  (trade_journal, drip variants, analytics, etc.).
+Event bus format (one JSON per line), examples:
+
+  EXECUTION:
+    {
+      "type": "EXECUTION",
+      "label": "main",
+      "ts": 1731870000000,
+      "symbol": "BTCUSDT",
+      "side": "Buy",
+      "qty": "0.001",
+      "price": "95000",
+      "realisedPnl": "0.0",
+      "orderType": "Limit",
+      "execType": "Trade",
+      "raw": { ...full Bybit row... }
+    }
+
+  POSITION:
+    {
+      "type": "POSITION",
+      "label": "flashback02",
+      "ts": 1731870000500,
+      "symbol": "BTCUSDT",
+      "side": "Buy",
+      "size": "0.001",
+      "entryPrice": "95000",
+      "liquidationPrice": "82000.5",
+      "raw": { ...full Bybit row... }
+    }
+
+This event bus becomes the single source of truth for:
+- trade_journal
+- drip bots
+- guard / breaker
+- AI setup memory
+- sub notifiers
 """
 
 from __future__ import annotations
@@ -43,14 +77,19 @@ ROOT = settings.ROOT
 ENV_PATH = ROOT / ".env"
 STATE_DIR = ROOT / "state"
 STATE_DIR.mkdir(parents=True, exist_ok=True)
+
+# Old per-execution bus (raw WS executions, used by journal etc.)
 EXEC_BUS_PATH = STATE_DIR / "ws_executions.jsonl"
+
+# New normalized event bus (EXECUTION / POSITION / later: TRADE_OPEN, etc.)
+EVENT_BUS_PATH = STATE_DIR / "event_bus.jsonl"
 
 load_dotenv(ENV_PATH)
 
 
 def _append_exec_to_bus(label: str, row: Dict[str, Any]) -> None:
     """
-    Append a single execution event to the central JSONL bus.
+    Append a single execution event to the legacy central JSONL bus.
 
     Format per line:
       {
@@ -70,7 +109,28 @@ def _append_exec_to_bus(label: str, row: Dict[str, Any]) -> None:
             f.write(b"\n")
     except Exception as e:
         # This must NEVER kill the WS loop; just log it.
-        log.warning("Failed to append exec to bus: %r", e)
+        log.warning("Failed to append exec to legacy bus: %r", e)
+
+
+def _append_event(event: Dict[str, Any]) -> None:
+    """
+    Append a normalized event to the JSONL event bus.
+
+    Each line is a dict with at least:
+      - type   (e.g. "EXECUTION", "POSITION")
+      - label  (account label: main, flashback01, ...)
+      - ts     (epoch ms, local)
+
+    Additional fields are free-form. 'raw' usually holds the full WS row.
+    """
+    try:
+        if "ts" not in event:
+            event["ts"] = int(time.time() * 1000)
+        with EVENT_BUS_PATH.open("ab") as f:
+            f.write(orjson.dumps(event))
+            f.write(b"\n")
+    except Exception as e:
+        log.warning("Failed to append event to event_bus: %r", e)
 
 
 def _load_main_creds() -> Dict[str, str]:
@@ -113,7 +173,8 @@ async def log_execution(label: str, row: Dict[str, Any]) -> None:
     Core execution handler:
 
     - Logs to ws_switchboard logger.
-    - Appends to state/ws_executions.jsonl (central bus).
+    - Appends to state/ws_executions.jsonl (legacy bus).
+    - Appends a normalized EXECUTION event to state/event_bus.jsonl.
     - Sends Telegram on full LIMIT fills.
     - Optional extra exec stream via WS_SWITCHBOARD_TG_EXEC_LEVEL.
     """
@@ -144,8 +205,24 @@ async def log_execution(label: str, row: Dict[str, Any]) -> None:
         leaves_qty_str,
     )
 
-    # Append to bus (fire-and-forget)
+    # 1) Legacy exec bus (for existing bots like trade_journal)
     _append_exec_to_bus(label, row)
+
+    # 2) Normalized EXECUTION event into event_bus
+    event = {
+        "type": "EXECUTION",
+        "label": label,
+        "symbol": sym,
+        "side": side,
+        "qty": qty,
+        "price": price,
+        "realisedPnl": realised,
+        "orderType": row.get("orderType"),
+        "execType": exec_type,
+        "isFullLimitFill": bool(order_type == "limit" and is_zero_leaves),
+        "raw": row,
+    }
+    _append_event(event)
 
     # --- FULL LIMIT FILL DETECTION ----------------------------------------
     # We consider it "full" if:
@@ -190,7 +267,10 @@ async def log_position(label: str, row: Dict[str, Any]) -> None:
     """
     Basic position logger for now.
 
-    Later, tp_sl_manager can subscribe to these events.
+    - Logs to logger.
+    - Emits a normalized POSITION event into event_bus.jsonl.
+
+    Later, tp_sl_manager / guard / AI can subscribe to these events.
     """
     b = bind_context(log, acct=label, topic="position")
     sym = row.get("symbol")
@@ -207,12 +287,26 @@ async def log_position(label: str, row: Dict[str, Any]) -> None:
         entry,
         liq,
     )
+
+    # Normalized POSITION event
+    event = {
+        "type": "POSITION",
+        "label": label,
+        "symbol": sym,
+        "side": side,
+        "size": size,
+        "entryPrice": entry,
+        "liquidationPrice": liq,
+        "raw": row,
+    }
+    _append_event(event)
     # No Telegram spam here (yet). We'll add smarter logic later if needed.
 
 
 async def main_async() -> None:
     log.info("WS Switchboard Bot starting (root=%s, env=%s)", ROOT, ENV_PATH)
     log.info("Execution bus path: %s", EXEC_BUS_PATH)
+    log.info("Event bus path: %s", EVENT_BUS_PATH)
 
     sw = WsSwitchboard()
 
