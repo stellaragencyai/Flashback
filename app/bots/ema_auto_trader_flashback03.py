@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Flashback — EMA Auto Trader (flashback03) v1.3
+Flashback — EMA Auto Trader (flashback03) v1.4
 
 Account binding:
     - Trades ONLY on the Bybit subaccount whose keys are in:
@@ -23,6 +23,7 @@ Features:
     ...
     When price crosses trailing SL -> cancel-all + market close
 - Telegram:
+    - Startup "ONLINE" notification
     - Entry notification
     - TP hit notifications
     - Final trade summary with R, PnL, equity change, rating 1–5
@@ -53,7 +54,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Tuple, Optional
 
 import requests
-from dotenv import load_dotenv  # <<< NEW: load .env
+from dotenv import load_dotenv  # load .env
 
 # Optional WebSocket client
 try:
@@ -79,6 +80,9 @@ else:
 
 BYBIT_BASE = os.getenv("BYBIT_BASE", "https://api.bybit.com").rstrip("/")
 WS_PUBLIC_URL = os.getenv("BYBIT_WS_PUBLIC_LINEAR", "wss://stream.bybit.com/v5/public/linear")
+
+# allow adjusting recv_window via .env, default 20000 ms
+BYBIT_RECV_WINDOW = os.getenv("BYBIT_RECV_WINDOW", "20000")
 
 # *** BOUND TO FLASHBACK03 SUBACCOUNT ***
 API_KEY = os.getenv("BYBIT_FLASHBACK03_API_KEY", "")
@@ -134,7 +138,7 @@ TOP_LIQUID_FALLBACK = 30
 # Loop timing
 LOOP_SLEEP_SEC = 30
 
-# Make per-bot filenames so it doesn't clash with MAIN version
+# Per-bot filenames
 AI_LOG_PATH = STATE_DIR / "ema_auto_trader_trades_fb03.jsonl"
 TRAIL_STATE_PATH = STATE_DIR / "ema_trailing_state_fb03.json"
 PROFILES_PATH = STATE_DIR / "ema_symbol_profiles_fb03.json"
@@ -180,7 +184,7 @@ def bybit_request(
 
     body_str = json.dumps(body) if body else ""
     ts = str(int(time.time() * 1000))
-    recv_window = "5000"
+    recv_window = BYBIT_RECV_WINDOW
 
     sign = _sign(ts, recv_window, query_string, body_str)
 
@@ -200,6 +204,7 @@ def bybit_request(
     resp.raise_for_status()
     data = resp.json()
     if data.get("retCode") not in (0, "0"):
+        # Surface timestamp problems clearly
         raise RuntimeError(f"Bybit error {data.get('retCode')}: {data.get('retMsg')}")
     return data
 
@@ -238,7 +243,7 @@ def ema(series: List[Decimal], length: int) -> List[Decimal]:
     return ema_vals
 
 
-def atr(candles: List[Dict[str, Any]], period: int = 14) -> Decimal:
+def atr(candles: List[Dict[str, Any]], period: int) -> Decimal:
     if len(candles) < period + 1:
         return Decimal("0")
     trs: List[Decimal] = []
@@ -260,7 +265,7 @@ def atr(candles: List[Dict[str, Any]], period: int = 14) -> Decimal:
     return sum(trs) / Decimal(len(trs))
 
 
-def adx(candles: List[Dict[str, Any]], period: int = 14) -> Decimal:
+def adx(candles: List[Dict[str, Any]], period: int) -> Decimal:
     if len(candles) < period + 2:
         return Decimal("0")
 
@@ -476,8 +481,7 @@ def place_market_order(
         "timeInForce": "IOC",
         "reduceOnly": False,
     }
-    data = bybit_request("POST", "/v5/order/create", body=body)
-    _ = data
+    _ = bybit_request("POST", "/v5/order/create", body=body)
     return side, qty
 
 
@@ -1116,10 +1120,19 @@ def max_trades_for_equity(eq: Decimal) -> int:
 # -------------------- Main loop --------------------
 
 def main_loop() -> None:
-    print(f"=== EMA Auto Trader v1.3 ({SUB_LABEL}) ===")
+    print(f"=== EMA Auto Trader v1.4 ({SUB_LABEL}) ===")
     print(f"Root: {ROOT}")
     print(f"State: {STATE_DIR}")
     print(f"Bybit base: {BYBIT_BASE}")
+    print(f"recv_window: {BYBIT_RECV_WINDOW} ms")
+
+    # NEW: startup heartbeat to Telegram
+    tg_send(
+        "✅ EMA Auto Trader ONLINE\n"
+        f"Sub: {SUB_LABEL}\n"
+        f"Bybit: {BYBIT_BASE}\n"
+        f"recv_window: {BYBIT_RECV_WINDOW} ms"
+    )
 
     profiles = load_profiles()
     trail_state = load_trailing_state()
