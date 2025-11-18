@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Flashback — Supervisor v4.6 (Root-aware + Subaccount Status + Central + Optional Sub-bot Pings)
+# Flashback — Supervisor v4.7 (Root-aware + Subaccount Status + Central + Optional Sub-bot Pings)
 #
 # What this does:
 # - Forces project root as working directory so imports and .env are consistent.
@@ -65,7 +65,7 @@ except Exception:  # noqa: BLE001
     load_subs = None   # type: ignore[assignment]
     send_tg_to_sub = None  # type: ignore[assignment]
 
-SUPERVISOR_VERSION = "4.6"
+SUPERVISOR_VERSION = "4.7"
 
 # ---------- PATHS & ENV ----------
 
@@ -387,13 +387,14 @@ def notify_sub_bots_online() -> None:
 # ---------- BOT LIST ----------
 
 # app/bots/supervisor.py → BOTS list
-# Current core set: WS switchboard, TP/SL, journal, executor_v2, equity drip
+# Current core set: WS switchboard, TP/SL, journal, executor_v2, equity drip, sub_exec_notifier
 BOTS: List[str] = [
-    "app.bots.ws_switchboard",   # WS hub: multi-account private streams
+    "app.bots.ws_switchboard",    # WS hub: multi-account private streams
     "app.bots.tp_sl_manager",
     "app.bots.trade_journal",
     "app.bots.executor_v2",
     "app.bots.equity_drip_bot",
+    "app.bots.sub_exec_notifier",  # NEW: per-sub Telegram exec notifications (WS-driven)
 ]
 
 procs: Dict[str, subprocess.Popen] = {}
