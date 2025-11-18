@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Flashback — EMA Auto Trader (flashback03) v1.2
+Flashback — EMA Auto Trader (flashback03) v1.3
 
 Account binding:
     - Trades ONLY on the Bybit subaccount whose keys are in:
@@ -53,12 +53,27 @@ from pathlib import Path
 from typing import Dict, Any, List, Tuple, Optional
 
 import requests
+from dotenv import load_dotenv  # <<< NEW: load .env
 
 # Optional WebSocket client
 try:
     import websocket  # type: ignore
 except ImportError:
     websocket = None  # type: ignore
+
+# -------------------- PATHS & ENV LOADING --------------------
+
+# Project root: .../Flashback
+ROOT = Path(__file__).resolve().parents[2]
+STATE_DIR = ROOT / "state"
+STATE_DIR.mkdir(parents=True, exist_ok=True)
+
+ENV_PATH = ROOT / ".env"
+if ENV_PATH.exists():
+    load_dotenv(ENV_PATH)
+    print(f"[EMA fb03] Loaded .env from {ENV_PATH}")
+else:
+    print(f"[EMA fb03] WARNING: .env not found at {ENV_PATH}; using OS env only.")
 
 # -------------------- CONFIG --------------------
 
@@ -118,11 +133,6 @@ TOP_LIQUID_FALLBACK = 30
 
 # Loop timing
 LOOP_SLEEP_SEC = 30
-
-# Paths
-ROOT = Path(__file__).resolve().parents[2]
-STATE_DIR = ROOT / "state"
-STATE_DIR.mkdir(parents=True, exist_ok=True)
 
 # Make per-bot filenames so it doesn't clash with MAIN version
 AI_LOG_PATH = STATE_DIR / "ema_auto_trader_trades_fb03.jsonl"
@@ -325,7 +335,18 @@ def adx(candles: List[Dict[str, Any]], period: int = 14) -> Decimal:
     if len(dx_vals) < period:
         return Decimal("0")
 
-    dx_smooth = wilder_smooth(dx_vals, period)
+    def wilder_avg(vals: List[Decimal], n: int) -> List[Decimal]:
+        if len(vals) < n:
+            return []
+        first = sum(vals[:n]) / Decimal(n)
+        out: List[Decimal] = [first]
+        prev = first
+        for v in vals[n:]:
+            prev = ((prev * (Decimal(n) - Decimal("1"))) + v) / Decimal(n)
+            out.append(prev)
+        return out
+
+    dx_smooth = wilder_avg(dx_vals, period)
     if not dx_smooth:
         return Decimal("0")
 
@@ -1095,7 +1116,7 @@ def max_trades_for_equity(eq: Decimal) -> int:
 # -------------------- Main loop --------------------
 
 def main_loop() -> None:
-    print(f"=== EMA Auto Trader v1.2 ({SUB_LABEL}) ===")
+    print(f"=== EMA Auto Trader v1.3 ({SUB_LABEL}) ===")
     print(f"Root: {ROOT}")
     print(f"State: {STATE_DIR}")
     print(f"Bybit base: {BYBIT_BASE}")
