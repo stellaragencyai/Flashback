@@ -171,6 +171,10 @@ def _list_recent_executions_since(last_exec_time_ms: int) -> List[dict]:
     We filter client-side for:
       - orderType == "Limit"
       - realisedPnl > 0
+
+    This version is more resilient:
+      - Retries a few times on transient network/DNS errors.
+      - Logs errors but never crashes the bot.
     """
     params: Dict[str, str] = {
         "category": CATEGORY,
@@ -181,16 +185,39 @@ def _list_recent_executions_since(last_exec_time_ms: int) -> List[dict]:
         # startTime is in ms
         params["startTime"] = str(last_exec_time_ms + 1)
 
+    last_error: Any = None
+    r: dict = {}
+
+    for attempt in range(1, 4):
+        try:
+            r = bybit_get("/v5/execution/list", params)
+            break
+        except Exception as e:
+            last_error = e
+            msg = f"[Drip] execution/list fetch error (attempt {attempt}/3): {e}"
+            log.error(msg)
+            # Avoid hammering on repeated DNS/network failure
+            time.sleep(2 * attempt)
+    else:
+        # All retries failed; log once and return empty list to skip this cycle
+        msg = f"[Drip] execution/list fetch failed after 3 attempts: {last_error}"
+        log.error(msg)
+        # Do NOT rely on Telegram here; if network/DNS is broken, it'll likely fail too
+        try:
+            tg.warn(msg)
+        except Exception:
+            print(msg)
+        return []
+
     try:
-        r = bybit_get("/v5/execution/list", params)
         rows = r.get("result", {}).get("list", []) or []
         if not isinstance(rows, list):
             return []
     except Exception as e:
-        msg = f"[Drip] execution/list fetch error: {e}"
+        msg = f"[Drip] execution/list response parse error: {e}"
         log.error(msg)
         try:
-            tg.error(msg)
+            tg.warn(msg)
         except Exception:
             print(msg)
         return []
@@ -436,6 +463,7 @@ def loop() -> None:
             time.sleep(POLL_SECONDS)
 
         except Exception as e:
+            # Loop-level guard: log and sleep, but don't die.
             msg = f"[Drip] loop error: {e}"
             log.error(msg)
             try:
@@ -447,4 +475,12 @@ def loop() -> None:
 
 if __name__ == "__main__":
     log.info("Equity Drip Bot starting in standalone mode...")
-    loop()
+    # Outer guard: if loop() ever crashes hard, restart after a delay.
+    while True:
+        try:
+            loop()
+        except Exception as e:
+            msg = f"[Drip] FATAL: loop() crashed: {e}"
+            log.error(msg)
+            print(msg)
+            time.sleep(10)
