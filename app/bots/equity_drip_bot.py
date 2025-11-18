@@ -6,6 +6,12 @@
 #   transfer DRIP_PCT of that realised PnL (USDT) from Main UNIFIED
 #   -> Subaccount UNIFIED, rotating through SUB_UIDS_ROUND_ROBIN.
 #
+# New (2025-11-17)
+#   - Optional SINGLE-SUB override via env:
+#       DRIP_SINGLE_SUB_UID=<Bybit MemberId>
+#     If set, the bot ignores SUB_UIDS_ROUND_ROBIN and sends ALL drips only
+#     to that UID (e.g. flashback02) so you can test one sub safely.
+#
 # Guarantees
 #   - Idempotent per execution: processed IDs are remembered on disk.
 #   - Respects MAIN_BAL_FLOOR_USD: will skip if floor would be violated.
@@ -13,6 +19,7 @@
 #
 # Requirements
 #   - SUB_UIDS_ROUND_ROBIN in .env as comma-separated Bybit MemberId UIDs
+#   - Optional: DRIP_SINGLE_SUB_UID to force single target
 #   - Keys for inter-transfer set in flashback_common (KEY_XFER/SEC_XFER)
 #
 # Notes
@@ -28,6 +35,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 import hashlib
 from decimal import Decimal, ROUND_DOWN, InvalidOperation
@@ -231,7 +239,7 @@ def _is_profitable_limit_fill(row: dict) -> bool:
     return True
 
 
-def _notify_startup(eff_pct: Decimal, subs: List[str]) -> None:
+def _notify_startup(eff_pct: Decimal, subs: List[str], mode_desc: str) -> None:
     """
     Send a clear startup heartbeat so you know the bot is alive
     when run individually or under supervisor.
@@ -241,7 +249,8 @@ def _notify_startup(eff_pct: Decimal, subs: List[str]) -> None:
         f"State file: {STATE_PATH}\n"
         f"Poll: {POLL_SECONDS}s | CATEGORY={CATEGORY}\n"
         f"DRIP_PCT raw={DRIP_PCT} → effective={eff_pct}\n"
-        f"Round-robin UIDs ({len(subs)}): {', '.join(subs)}"
+        f"Mode: {mode_desc}\n"
+        f"Target UIDs ({len(subs)}): {', '.join(subs)}"
     )
     log.info(msg.replace("\n", " | "))
     try:
@@ -256,10 +265,19 @@ def loop() -> None:
     eff_pct = _effective_drip_pct()
     state = _load_state()
     processed: Dict[str, bool] = state.get("processed", {})
-    subs = [u.strip() for u in SUB_UIDS_ROUND_ROBIN.split(",") if u.strip()]
+
+    # NEW: single-sub override for testing (e.g. flashback02 only)
+    single_uid = os.getenv("DRIP_SINGLE_SUB_UID", "").strip()
+
+    if single_uid:
+        subs = [single_uid]
+        mode_desc = f"single-sub (DRIP_SINGLE_SUB_UID={single_uid})"
+    else:
+        subs = [u.strip() for u in SUB_UIDS_ROUND_ROBIN.split(",") if u.strip()]
+        mode_desc = f"round-robin (SUB_UIDS_ROUND_ROBIN={SUB_UIDS_ROUND_ROBIN})"
 
     if not subs:
-        msg = "💧 Drip disabled: no SUB_UIDS_ROUND_ROBIN configured."
+        msg = "💧 Drip disabled: no target UIDs configured (subs list is empty)."
         log.warning(msg)
         try:
             tg.warn(msg)
@@ -277,7 +295,7 @@ def loop() -> None:
         return
 
     # Clear heartbeat so you can verify it's alive when run manually
-    _notify_startup(eff_pct, subs)
+    _notify_startup(eff_pct, subs, mode_desc)
 
     last_exec_time_ms: int = int(state.get("last_exec_time_ms", 0))
     last_exec_id: str = str(state.get("last_exec_id", ""))
@@ -356,11 +374,21 @@ def loop() -> None:
                             print(msg)
                         continue
 
-                    # Select target sub by round-robin
+                    # Select target sub: either single-sub or round-robin
                     uid = _pick_next_uid(state, subs)
 
                     # Execute transfer (live)
-                    inter_transfer_usdt_to_sub(uid, amt)
+                    try:
+                        inter_transfer_usdt_to_sub(uid, amt)
+                    except Exception as tx_err:
+                        msg = f"[Drip] transfer to UID {uid} for {_fmt_usd(amt)} FAILED: {tx_err}"
+                        log.error(msg)
+                        try:
+                            tg.error(msg)
+                        except Exception:
+                            print(msg)
+                        # don't mark as success; state still updated so we won't re-use same exec
+                        continue
 
                     # Persist state after successful transfer
                     sym = row.get("symbol", "")
