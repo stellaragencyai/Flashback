@@ -888,3 +888,8 @@ websockets.exceptions.ConnectionClosedError: no close frame received or sent
 2025-11-18 05:12:44,990 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
 2025-11-17 22:12:47,379 [INFO] [strategies_debug] Running strategies_debug tool...
 2025-11-17 22:12:47,392 [INFO] [strategies] Loaded 10 strategies from C:\Users\nolan\Desktop\Flashback\config\strategies.yaml (version=3)
+2025-11-18 05:12:47,995 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-18 05:12:49,320 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-18 05:12:49,624 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-18 05:12:49,624 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-18 05:12:49,926 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2k4llnsebh8vjv3e5e0-1q2m2k'}

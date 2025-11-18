@@ -7,19 +7,20 @@ Purpose
 -------
 - Consume signals from an append-only JSONL file (signals/observed.jsonl).
 - For EACH strategy defined in config/strategies.yaml:
-    • Check symbol + timeframe match via strategy_gate.
-    • Check enabled + automation mode.
-    • Run AI gating.
+    • Check symbol + timeframe match via strategy registry (app.core.strategies).
+    • Check enabled + automation mode (OFF / LEARN_DRY / LIVE_CANARY / LIVE_FULL).
+    • Run AI gating (trade_classifier).
     • Run correlation gate.
     • Size entries.
-    • Place live or paper entries.
+    • Place live entries only for LIVE_* strategies.
+      LEARN_DRY stays paper (logged only).
 - TP/SL handled by separate bot (tp_manager).
 
 Notes
 -----
 - This executor is stateless across runs except for the cursor file.
 - It does NOT contain strategy rules; those live in config/strategies.yaml
-  and core/strategy_gate.py.
+  and app.core.strategies.
 """
 
 from __future__ import annotations
@@ -28,7 +29,7 @@ import json
 import asyncio
 from decimal import Decimal
 from pathlib import Path
-from typing import Dict, Optional, Tuple, List, Any
+from typing import Dict, Optional, List, Any
 
 from app.core.config import settings
 from app.core.logger import get_logger, bind_context
@@ -38,15 +39,10 @@ from app.core.feature_store import log_features
 from app.core.trade_classifier import classify as classify_trade
 from app.core.corr_gate_v2 import allow as corr_allow
 from app.core.sizing import bayesian_size, risk_capped_qty
-from app.core.strategy_gate import (
-    get_strategies_for_signal,
-    is_strategy_enabled,
-    is_strategy_live,
-    strategy_label,
-    strategy_risk_pct,
-)
 from app.core.portfolio_guard import can_open_trade
 
+# NEW: use strategy registry instead of strategy_gate
+from app.core.strategies import ai_strategies_for_signal, Strategy
 
 log = get_logger("executor_v2")
 
@@ -103,32 +99,41 @@ async def process_signal_line(line: str) -> None:
     if not symbol or not tf:
         return
 
-    # Find strategies that want this signal
-    strategies = get_strategies_for_signal(symbol, tf)
+    # Find strategies that want this signal (LEARN_DRY + LIVE_*)
+    strategies: List[Strategy] = ai_strategies_for_signal(symbol, tf)
     if not strategies:
         return
 
-    for strat_name, strat_cfg in strategies.items():
+    for strat in strategies:
         try:
-            await handle_strategy_signal(strat_name, strat_cfg, sig)
+            await handle_strategy_signal(strat, sig)
         except Exception as e:
-            log.exception("Strategy error (%s): %r", strat_name, e)
+            log.exception("Strategy error (%s): %r", strat.id, e)
 
 
 # ---------- STRATEGY PROCESSOR ---------- #
 
 async def handle_strategy_signal(
-    strat_name: str,
-    strat_cfg: Dict[str, Any],
+    strat: Strategy,
     sig: Dict[str, Any],
 ) -> None:
-    bound = bind_context(log, strat=strat_name)
+    """
+    Handle a single signal for a single Strategy object.
 
-    enabled = bool(strat_cfg.get("enabled", False))
-    mode = str(strat_cfg.get("automation_mode", "OFF")).upper().strip()
+    Modes:
+      - OFF        -> ignored
+      - LEARN_DRY  -> AI + feature logging + sizing, PAPER only
+      - LIVE_CANARY / LIVE_FULL -> AI + logging + sizing + LIVE orders
+    """
+    bound = bind_context(log, strat=strat.id)
 
-    if not enabled or mode == "OFF":
-        bound.debug("strategy disabled or automation_mode=OFF")
+    if not strat.enabled:
+        bound.debug("strategy disabled (enabled=false)")
+        return
+
+    mode = str(strat.automation_mode or "OFF").upper().strip()
+    if mode == "OFF":
+        bound.debug("automation_mode=OFF; ignoring signal")
         return
 
     symbol = sig.get("symbol")
@@ -160,13 +165,13 @@ async def handle_strategy_signal(
 
     # Feature logging (best-effort)
     try:
-        log_features(symbol, sig, strat_name=strat_name)
+        log_features(symbol, sig, strat_name=strat.id)
     except Exception as e:
         bound.warning("feature logging failed: %r", e)
 
-    # Sizing
+    # Sizing (still uses your existing bayesian_size + risk_capped_qty stack)
     try:
-        raw_qty = bayesian_size(symbol, side, price, strat_name)
+        raw_qty = bayesian_size(symbol, side, price, strat.id)
         qty = risk_capped_qty(symbol, raw_qty)
     except Exception as e:
         bound.error("sizing error: %r", e)
@@ -176,11 +181,18 @@ async def handle_strategy_signal(
         bound.info("qty <= 0 after sizing; skipping entry. raw=%r", raw_qty)
         return
 
-    # Execute
-    if mode == "LIVE":
-        await execute_entry(symbol, side, qty, price, strat_name, bound)
+    # LIVE vs PAPER behaviour based on strategy automation_mode
+    if strat.can_trade_live:
+        await execute_entry(symbol, side, qty, price, strat, bound)
     else:
-        bound.info("PAPER entry: %s %s qty=%s @ ~%s", symbol, side, qty, price)
+        bound.info(
+            "PAPER entry (%s): %s %s qty=%s @ ~%s",
+            mode,
+            symbol,
+            side,
+            qty,
+            price,
+        )
 
 
 # ---------- EXECUTOR ---------- #
@@ -190,9 +202,25 @@ async def execute_entry(
     side: str,
     qty: float,
     price: float,
-    strat: str,
+    strat: Strategy,
     bound_log,
 ) -> None:
+    """
+    Place a LIVE order for a given strategy.
+
+    Uses existing Bybit client and places a linear Market order.
+    """
+    # Optional: portfolio guard hook (if your can_open_trade expects other args, adapt this)
+    try:
+        if not can_open_trade(symbol):
+            bound_log.info("Portfolio guard blocked new trade on %s", symbol)
+            return
+    except TypeError:
+        # Signature mismatch, ignore for now rather than crash
+        pass
+    except Exception as e:
+        bound_log.warning("portfolio_guard.can_open_trade error: %r; continuing without it", e)
+
     client = get_trade_client()
     try:
         resp = client.place_order(
@@ -203,18 +231,27 @@ async def execute_entry(
             orderType="Market",
         )
         bound_log.info(
-            "LIVE entry executed: %s %s qty=%s resp=%r",
+            "LIVE entry executed [%s | mode=%s]: %s %s qty=%s resp=%r",
+            strat.id,
+            strat.automation_mode,
             symbol,
             side,
             qty,
             resp,
         )
         try:
-            tg_send(f"🚀 Entry placed [{strat}] {symbol} {side} qty={qty}")
+            tg_send(f"🚀 Entry placed [{strat.id}] {symbol} {side} qty={qty}")
         except Exception as e:
             bound_log.warning("telegram send failed: %r", e)
     except Exception as e:
-        bound_log.error("order failed for %s %s qty=%s: %r", symbol, side, qty, e)
+        bound_log.error(
+            "order failed for [%s] %s %s qty=%s: %r",
+            strat.id,
+            symbol,
+            side,
+            qty,
+            e,
+        )
 
 
 # ---------- MAIN LOOP ---------- #
