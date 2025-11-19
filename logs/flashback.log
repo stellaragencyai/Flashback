@@ -24682,3 +24682,37 @@ websockets.exceptions.ConnectionClosedError: no close frame received or sent
 2025-11-19 16:33:47,177 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
 2025-11-19 16:33:47,489 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2etkvm0lh599gaea7rg-1wplgk'}
 2025-11-19 16:34:48,289 [INFO] [strategies] Loaded 10 strategies from C:\Users\nolan\Desktop\Flashback\config\strategies.yaml (version=3)
+2025-11-19 16:36:44,039 [ERROR] [ws_switchboard] WS[flashback03] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-19 16:36:44,040 [WARNING] [ws_switchboard] WS[flashback03] disconnected; reconnecting in 3.0s
+2025-11-19 16:36:44,057 [ERROR] [ws_switchboard] WS[main] error in run_forever: ConnectionClosedError(None, None, None)
+Traceback (most recent call last):
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 88, in run_forever
+    await self._connect_and_run_once()
+  File "C:\Users\nolan\Desktop\Flashback\app\core\ws_switchboard.py", line 119, in _connect_and_run_once
+    raw = await ws.recv()
+          ^^^^^^^^^^^^^^^
+  File "C:\Users\nolan\Desktop\Flashback\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 322, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2025-11-19 16:36:44,058 [WARNING] [ws_switchboard] WS[main] disconnected; reconnecting in 3.0s
+2025-11-19 16:36:47,058 [INFO] [ws_switchboard] WS[flashback03] connecting to wss://stream.bybit.com/v5/private
+2025-11-19 16:36:47,058 [INFO] [ws_switchboard] WS[main] connecting to wss://stream.bybit.com/v5/private
+2025-11-19 16:36:48,386 [INFO] [ws_switchboard] WS[flashback03] auth sent
+2025-11-19 16:36:48,438 [INFO] [ws_switchboard] WS[main] auth sent
+2025-11-19 16:36:48,678 [INFO] [ws_switchboard] WS[flashback03] auth success
+2025-11-19 16:36:48,678 [INFO] [ws_switchboard] WS[flashback03] subscribe sent: ['execution', 'position']
+2025-11-19 16:36:48,740 [INFO] [ws_switchboard] WS[main] auth success
+2025-11-19 16:36:48,740 [INFO] [ws_switchboard] WS[main] subscribe sent: ['execution', 'position']
+2025-11-19 16:36:48,969 [INFO] [ws_switchboard] WS[flashback03] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2etkvm0lh599gaea7rg-1wpnf3'}
+2025-11-19 16:36:49,045 [INFO] [ws_switchboard] WS[main] control msg: {'success': False, 'ret_msg': 'Request not authorized', 'op': 'subscribe', 'conn_id': 'd2a4c6evqclvsgos5bjg-2442j0'}
+2025-11-19 16:37:20,800 [INFO] [strategies] Loaded 10 strategies from C:\Users\nolan\Desktop\Flashback\config\strategies.yaml (version=3)
+2025-11-19 16:37:32,331 [INFO] [strategies] Loaded 10 strategies from C:\Users\nolan\Desktop\Flashback\config\strategies.yaml (version=3)
