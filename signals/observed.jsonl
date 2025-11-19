@@ -7,3 +7,4 @@
 {"symbol":"BTCUSDT","timeframe":"5","side":"Buy","price":65000,"ts":1763449405294,"source":"emit_test_signal","note":"single test signal for executor_v2 + canaries"}
 {"symbol":"BTCUSDT","timeframe":"5","side":"Buy","price":65000,"ts":1763449499800,"source":"emit_test_signal","note":"single test signal for executor_v2 + canaries"}
 {"symbol":"BTCUSDT","timeframe":"5","side":"Buy","price":65000,"ts":1763449623175,"source":"emit_test_signal","note":"single test signal for executor_v2 + canaries"}
+{"symbol":"BTCUSDT","side":"Buy","reason":"manual_test","ts_ms":1763569113982,"est_rr":0.3}
