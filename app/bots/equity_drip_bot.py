@@ -331,6 +331,21 @@ def loop() -> None:
         try:
             rows = _list_recent_executions_since(last_exec_time_ms)
 
+            # DEBUG PATCH: inspect recent executions so we can see what Bybit is sending
+            try:
+                log.info("[Drip DEBUG] Got %d executions from Bybit", len(rows))
+                for dbg in rows[-5:]:
+                    log.info(
+                        "[Drip DEBUG] symbol=%s side=%s orderType=%s execQty=%s realisedPnl=%s",
+                        dbg.get("symbol"),
+                        dbg.get("side"),
+                        dbg.get("orderType"),
+                        dbg.get("execQty"),
+                        dbg.get("realisedPnl"),
+                    )
+            except Exception as _dbg_e:
+                print(f"[Drip DEBUG] logging error: {_dbg_e}")
+
             if not rows:
                 time.sleep(POLL_SECONDS)
                 continue
