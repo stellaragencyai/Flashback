@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Base44 / Flashback — AI Hooks (resilient, ai_store-optional)
+Base44 / Flashback — AI Hooks
 
 Thin convenience layer on top of:
 - app.core.ai_schema
-- app.core.ai_store (optional)
+- app.core.ai_store (optional; falls back to stub if missing)
 
 Purpose:
 - Give bots a simple, stable API to log AI-relevant events:
@@ -13,10 +13,9 @@ Purpose:
     • log_order_basic(...)
     • log_trade_summary_basic(...)
 
-If app.core.ai_store is NOT available:
-- Uses a no-op stub that just prints lightweight [AI_STUB] lines.
-- This lets the rest of the system run (signal engine, executor, etc.)
-  without failing on ImportError.
+If ai_store is NOT available yet, this module will:
+    - Not crash.
+    - Print lightweight [AI_STORE_STUB] messages instead of persisting data.
 """
 
 from __future__ import annotations
@@ -31,49 +30,36 @@ from app.core.ai_schema import (
     TradeSummaryLog,
 )
 
-# Try to import the real ai_store; fall back to a stub if missing.
+# ---------- ai_store (real or stub) ----------
+
 _HAS_AI_STORE = False
+
 try:
-    from app.core import ai_store  # type: ignore[assignment]
+    # Try to use the real store implementation if you have it wired.
+    from app.core import ai_store as _ai_store  # type: ignore
     _HAS_AI_STORE = True
 except Exception:
-    _HAS_AI_STORE = False
-
+    # Fallback: stubbed store that just prints to stdout so nothing crashes.
     class _StubAIStore:
-        """
-        No-op replacement for ai_store when it's not implemented yet.
-        Prevents crashes while still giving minimal visibility.
-        """
-
         def log_signal(self, payload: SignalLog) -> None:
-            try:
-                sym = payload.get("symbol")
-                tf = payload.get("timeframe")
-                side = payload.get("side")
-                src = payload.get("source")
-                print(f"[AI_STUB] log_signal: {sym} {tf} {side} from {src}")
-            except Exception:
-                print("[AI_STUB] log_signal (unstructured)")
+            sid = payload.get("signal_id")
+            sym = payload.get("symbol")
+            tf = payload.get("timeframe")
+            side = payload.get("side")
+            print(f"[AI_STORE_STUB] log_signal: {sid} {sym} {tf} {side}")
 
         def log_order(self, payload: OrderLog) -> None:
-            try:
-                oid = payload.get("order_id")
-                sym = payload.get("symbol")
-                side = payload.get("side")
-                print(f"[AI_STUB] log_order: {oid} {sym} {side}")
-            except Exception:
-                print("[AI_STUB] log_order (unstructured)")
+            oid = payload.get("order_id")
+            sym = payload.get("symbol")
+            print(f"[AI_STORE_STUB] log_order: {oid} {sym}")
 
         def log_trade_summary(self, payload: TradeSummaryLog) -> None:
-            try:
-                tid = payload.get("trade_id")
-                sym = payload.get("symbol")
-                outcome = payload.get("outcome")
-                print(f"[AI_STUB] log_trade_summary: {tid} {sym} outcome={outcome}")
-            except Exception:
-                print("[AI_STUB] log_trade_summary (unstructured)")
+            tid = payload.get("trade_id")
+            sym = payload.get("symbol")
+            outcome = payload.get("outcome")
+            print(f"[AI_STORE_STUB] log_trade_summary: {tid} {sym} outcome={outcome}")
 
-    ai_store = _StubAIStore()  # type: ignore[assignment]
+    _ai_store = _StubAIStore()  # type: ignore
 
 
 def _now_ms() -> int:
@@ -127,8 +113,7 @@ def log_signal_from_engine(
         "extra": extra or {},
     }
 
-    # Real store OR stub; both expose the same methods.
-    ai_store.log_signal(payload)  # type: ignore[arg-type]
+    _ai_store.log_signal(payload)
     return signal_id
 
 
@@ -176,7 +161,7 @@ def log_order_basic(
         "extra": extra or {},
     }
 
-    ai_store.log_order(payload)  # type: ignore[arg-type]
+    _ai_store.log_order(payload)
 
 
 # ---------- TRADES (CLOSED ROUND-TRIPS) ----------
@@ -236,4 +221,4 @@ def log_trade_summary_basic(
         "extra": extra or {},
     }
 
-    ai_store.log_trade_summary(payload)  # type: ignore[arg-type]
+    _ai_store.log_trade_summary(payload)
