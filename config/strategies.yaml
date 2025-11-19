@@ -12,7 +12,8 @@
 version: 3
 notes: |
   v3: Expanded symbol universes so AI can see MUCH more data.
-  - 3 canary subs allowed to trade LIVE (tiny but aggressive):
+  - TEMP: All subs currently in LEARN_DRY (no live orders) while we validate executor + routing.
+  - 3 intended canary subs for later LIVE:
       * Sub2_Breakout  (broad breakout/momentum universe)
       * Sub6_Speculative (microcap/spec universe)
       * Sub7_Canary    (majors + strong alts)
@@ -82,12 +83,12 @@ subaccounts:
     risk_per_trade_pct: 0.20
     max_concurrent_positions: 2
     ai_profile: breakout_v1
-    automation_mode: LIVE_CANARY
+    automation_mode: LEARN_DRY
     notes: |
       Aggressive breakout / momentum hunter with a large basket
-      of majors + volatile alts + your degen favourites. LIVE_CANARY
-      so it can actually pull the trigger, but with guardrails and
-      0.20% risk per trade.
+      of majors + volatile alts + your degen favourites.
+      TEMP: LEARN_DRY while executor is validated; later candidate
+      for LIVE_CANARY with guardrails and 0.20% risk per trade.
 
   # --------------------------------------------------------
   # Sub 3 — Intraday scalp (majors + most liquid alts)
@@ -193,11 +194,11 @@ subaccounts:
     risk_per_trade_pct: 0.15
     max_concurrent_positions: 1
     ai_profile: spec_v1
-    automation_mode: LIVE_CANARY
+    automation_mode: LEARN_DRY
     notes: |
       Chaos pen canary. Small universe but very spiky behaviour.
-      Live trading on the most insane pairs with 0.15% risk per
-      trade and global guardrails.
+      TEMP: LEARN_DRY for now; later candidate for LIVE_CANARY
+      with tight global risk controls.
 
   # --------------------------------------------------------
   # Sub 7 — Canary / Experimental (CANARY)
@@ -221,11 +222,12 @@ subaccounts:
     risk_per_trade_pct: 0.10
     max_concurrent_positions: 1
     ai_profile: canary_v1
-    automation_mode: LIVE_CANARY
+    automation_mode: LEARN_DRY
     notes: |
       Experimental canary with a solid mix of majors and
-      strong alts. Lower risk (0.10% per trade) but allowed
-      to trade LIVE so AI can learn from actual executions.
+      strong alts. TEMP: LEARN_DRY while we validate executor
+      and AI gate. Later this becomes the first LIVE_CANARY
+      at 0.10% risk per trade.
 
   # --------------------------------------------------------
   # Sub 8 — Swing Multi-Asset
