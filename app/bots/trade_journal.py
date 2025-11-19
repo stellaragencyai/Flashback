@@ -1,5 +1,5 @@
 # app/bots/trade_journal.py
-# Flashback — Trade Journal (Main, v4.1 — WS-driven, cleaner notifications + trade rating + guard-aware)
+# Flashback — Trade Journal (Main, v4.2 — WS-driven, cleaner notifications + trade rating + guard-aware)
 #
 # What it does (NOW WS-BASED)
 # - Consumes executions from state/ws_executions.jsonl (written by ws_switchboard).
@@ -91,7 +91,7 @@ EXEC_BUS_PATH  = STATE_DIR / "ws_executions.jsonl"
 
 # Journal metadata
 ACCOUNT_LABEL     = "MAIN"
-JOURNAL_VERSION   = 41  # 4.1: WS-driven + cursor offset + nicer PnL + resilience
+JOURNAL_VERSION   = 42  # 4.2: startup snapshot refresh if side/size changed
 
 # Use dedicated journal notifier channel
 tg = get_notifier("journal")
@@ -635,7 +635,7 @@ def _iter_new_exec_rows_for_main(start_pos: int) -> Tuple[List[dict], int]:
 # ---------- main loop ----------
 
 def loop():
-    tg.info("📝 Flashback Trade Journal v4.1 (WS-driven, guard-aware, clean output) started.")
+    tg.info("📝 Flashback Trade Journal v4.2 (WS-driven, guard-aware, clean output) started.")
     open_state: Dict[str, dict] = _load_open_state()
     cursor_pos: int = _load_cursor_pos()
 
@@ -653,54 +653,74 @@ def loop():
 
     # On boot, announce any already-open positions (best-effort snapshot)
     for sym, p in pos_now.items():
-        if sym not in open_state:
+        try:
+            entry = Decimal(str(p["avgPrice"]))
+            size = Decimal(str(p["size"]))
+        except Exception:
+            continue
+
+        side_now = p.get("side", "")
+        prev_snap = open_state.get(sym)
+
+        # Decide whether we need to refresh snapshot:
+        # - new symbol
+        # - side changed
+        # - size changed
+        need_snapshot = False
+        if prev_snap is None:
+            need_snapshot = True
+        else:
+            prev_side = prev_snap.get("side")
             try:
-                entry = Decimal(str(p["avgPrice"]))
-
-                size  = Decimal(str(p["size"]))
+                prev_size = Decimal(str(prev_snap.get("size", "0")))
             except Exception:
-                continue
+                prev_size = None
 
-            side  = p.get("side", "")
-            direction = _direction_from_side(side)
-            sl    = _get_stop_from_position(p)
-            sl_f, tps_f = _kline_infer_grid(sym, side, entry)
-            if sl is None:
-                sl = sl_f
-            rr = _avg_rr(entry, sl, tps_f)
-            eq_open = get_equity_usdt()
-            risk_per_unit, risk_usd, potential_reward = _risk_from_snapshot(entry, sl, size, rr)
+            if prev_side != side_now or prev_size != size:
+                need_snapshot = True
 
-            ts_open = _now_ms()
-            snap = {
-                "ts_open": ts_open,
-                "ts_open_iso": _to_iso(ts_open),
-                "symbol": sym,
-                "side": side,
-                "direction": direction,
-                "entry_price": str(entry),
-                "size": str(size),
-                "entry_notional_usd": _fmt_dec(entry * size, places=2),
-                "leverage": str(_leverage_from_position(p)) if _leverage_from_position(p) is not None else None,
-                "init_margin": str(_margin_from_position(p)) if _margin_from_position(p) is not None else None,
-                "stop_loss": str(sl) if sl is not None else None,
-                "tp_prices": [str(x) for x in tps_f],
-                "avg_rr_5": str(rr) if rr is not None else None,
-                "risk_per_unit": _fmt_dec(risk_per_unit, places=4),
-                "risk_usd": _fmt_dec(risk_usd, places=2),
-                "potential_reward_usd": _fmt_dec(potential_reward, places=2),
-                "equity_at_open": _fmt_dec(eq_open, places=2),
-                "entry_order_type": None,
-                "entry_liquidity": None,
-                "order_link_id": None,
-                "num_adds": 0,
-                "num_partials": 0,
-                "account": ACCOUNT_LABEL,
-                "journal_version": JOURNAL_VERSION,
-            }
-            open_state[sym] = snap
-            _save_open_state(open_state)
-            _notify_new_trade(snap)
+        if not need_snapshot:
+            continue
+
+        direction = _direction_from_side(side_now)
+        sl = _get_stop_from_position(p)
+        sl_f, tps_f = _kline_infer_grid(sym, side_now, entry)
+        if sl is None:
+            sl = sl_f
+        rr = _avg_rr(entry, sl, tps_f)
+        eq_open = get_equity_usdt()
+        risk_per_unit, risk_usd, potential_reward = _risk_from_snapshot(entry, sl, size, rr)
+
+        ts_open = _now_ms()
+        snap = {
+            "ts_open": ts_open,
+            "ts_open_iso": _to_iso(ts_open),
+            "symbol": sym,
+            "side": side_now,
+            "direction": direction,
+            "entry_price": str(entry),
+            "size": str(size),
+            "entry_notional_usd": _fmt_dec(entry * size, places=2),
+            "leverage": str(_leverage_from_position(p)) if _leverage_from_position(p) is not None else None,
+            "init_margin": str(_margin_from_position(p)) if _margin_from_position(p) is not None else None,
+            "stop_loss": str(sl) if sl is not None else None,
+            "tp_prices": [str(x) for x in tps_f],
+            "avg_rr_5": str(rr) if rr is not None else None,
+            "risk_per_unit": _fmt_dec(risk_per_unit, places=4),
+            "risk_usd": _fmt_dec(risk_usd, places=2),
+            "potential_reward_usd": _fmt_dec(potential_reward, places=2),
+            "equity_at_open": _fmt_dec(eq_open, places=2),
+            "entry_order_type": None,
+            "entry_liquidity": None,
+            "order_link_id": None,
+            "num_adds": 0,
+            "num_partials": 0,
+            "account": ACCOUNT_LABEL,
+            "journal_version": JOURNAL_VERSION,
+        }
+        open_state[sym] = snap
+        _save_open_state(open_state)
+        _notify_new_trade(snap)
 
     _save_open_state(open_state)
 
@@ -757,7 +777,7 @@ def loop():
                 # 3a) ENTRY or ADD
                 if is_entry_or_add:
                     snap = open_state.get(symbol)
-                    # New symbol or side changed: create/refresh snapshot
+                    # New symbol, side change, or we have no snapshot -> create/refresh snapshot
                     if snap is None or snap.get("side") != pos_side:
                         if pos:
                             try:
