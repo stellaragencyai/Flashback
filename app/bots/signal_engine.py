@@ -50,25 +50,57 @@ import json as _jsonlib
 from pathlib import Path
 from typing import Dict, List, Tuple, Any, Optional
 
+# ---------- HTTP client ----------
+
 try:
     import requests  # type: ignore
     _HAS_REQUESTS = True
 except Exception:
-    # Fallback to stdlib if `requests` is not installed in the environment
-    import urllib.request as _urllib_request
-    import urllib.parse as _urllib_parse
+    # Fallback to stdlib if `requests` is not installed
+    import urllib.request as _urllib_request  # type: ignore
+    import urllib.parse as _urllib_parse      # type: ignore
     import json as _json_fallback
     _HAS_REQUESTS = False
 
 from dotenv import load_dotenv
 
-# AI logging
-from app.core.ai_hooks import log_signal_from_engine
+# ---------- AI logging (optional) ----------
 
-# Telegram notifier (same pattern as supervisor)
+_HAS_AI_HOOKS = False
+try:
+    from app.core.ai_hooks import log_signal_from_engine as _real_log_signal_from_engine  # type: ignore
+    _HAS_AI_HOOKS = True
+except Exception:
+    # Stub if ai_hooks / ai_store not wired yet
+    def _real_log_signal_from_engine(
+        *,
+        symbol: str,
+        timeframe: str,
+        side: str,
+        source: str,
+        confidence: Optional[float],
+        stop_hint: Optional[float],
+        owner: str,
+        sub_uid: Optional[str],
+        strategy_role: str,
+        regime_tags: List[str],
+        extra: Dict[str, Any],
+    ) -> Optional[str]:
+        print(
+            f"[AI_STUB] log_signal_from_engine: {symbol} {timeframe} {side} | "
+            f"strategy={strategy_role} sub_uid={sub_uid} (ai_store not available)"
+        )
+        return None
+
+# Unified alias
+log_signal_from_engine = _real_log_signal_from_engine
+
+# ---------- Telegram notifier ----------
+
 from app.core.notifier_bot import get_notifier
 
-# Strategy registry (your YAML-backed file)
+# ---------- Strategy registry ----------
+
 try:
     from app.core import strategies as stratreg
     _HAS_STRATEGY_REGISTRY = True
@@ -76,18 +108,16 @@ except Exception:
     stratreg = None  # type: ignore
     _HAS_STRATEGY_REGISTRY = False
 
-
-# ---------- Paths & Env ----------
+# ---------- Paths & env ----------
 
 THIS_FILE = Path(__file__).resolve()
-BOTS_DIR = THIS_FILE.parent             # .../app/bots
-APP_DIR = BOTS_DIR.parent               # .../app
-ROOT_DIR = APP_DIR.parent               # project root
+BOTS_DIR = THIS_FILE.parent
+APP_DIR = BOTS_DIR.parent
+ROOT_DIR = APP_DIR.parent
 
-# Force project root as working directory so relative paths are sane
+# Force project root
 os.chdir(ROOT_DIR)
 
-# Load .env from project root
 ENV_PATH = ROOT_DIR / ".env"
 load_dotenv(dotenv_path=ENV_PATH)
 
@@ -118,17 +148,15 @@ SIG_TIMEFRAMES: List[str] = [tf.strip() for tf in _raw_tfs.split(",") if tf.stri
 SIG_POLL_SEC = int(os.getenv("SIG_POLL_SEC", "15"))
 SIG_HEARTBEAT_SEC = int(os.getenv("SIG_HEARTBEAT_SEC", "300"))
 
-# How many closes to use for our toy MA logic
+# Simple MA lookback
 MA_LOOKBACK = 8
 
-# Where to write executor-friendly signals
+# Where we write executor-friendly signals
 SIGNALS_DIR = ROOT_DIR / "signals"
 SIGNALS_DIR.mkdir(parents=True, exist_ok=True)
 SIGNALS_PATH = SIGNALS_DIR / "observed.jsonl"
 
-
-# ---------- Telegram Notifier ----------
-
+# Telegram main notifier
 tg = get_notifier("main")
 
 
@@ -136,14 +164,14 @@ def tg_info(msg: str) -> None:
     try:
         tg.info(msg)
     except Exception:
-        print(f"[signal_engine][TG error] {msg}")
+        print(f"[signal_engine][TG info fallback] {msg}")
 
 
 def tg_error(msg: str) -> None:
     try:
         tg.error(msg)
     except Exception:
-        print(f"[signal_engine][TG error] {msg}")
+        print(f"[signal_engine][TG error fallback] {msg}")
 
 
 # ---------- Bybit Kline Fetcher ----------
@@ -172,10 +200,10 @@ def fetch_recent_klines(
         resp.raise_for_status()
         data = resp.json()
     else:
-        # fallback to urllib (stdlib) when requests is not available
-        query = _urllib_parse.urlencode(params)
+        # stdlib fallback
+        query = _urllib_parse.urlencode(params)  # type: ignore[name-defined]
         full_url = f"{url}?{query}"
-        with _urllib_request.urlopen(full_url, timeout=10) as fh:
+        with _urllib_request.urlopen(full_url, timeout=10) as fh:  # type: ignore[name-defined]
             if hasattr(fh, "getcode"):
                 status = fh.getcode()
                 if status >= 400:
@@ -222,13 +250,6 @@ def compute_simple_signal(candles: List[Dict[str, Any]]) -> Tuple[Optional[str],
         (side, debug_info)
 
     side: "LONG" / "SHORT" / None
-
-    Logic:
-      - Use last 2 candles:
-          prev = candles[-2], last = candles[-1]
-      - Compute MA over last N closes (min 3, up to MA_LOOKBACK).
-      - LONG  if last.close > prev.close and last.close > MA
-      - SHORT if last.close < prev.close and last.close < MA
     """
     debug: Dict[str, Any] = {}
 
@@ -287,15 +308,6 @@ def append_signal_jsonl(
 ) -> None:
     """
     Append a single JSONL line in the format expected by auto_executor.
-
-    Field mapping:
-        - symbol: "BTCUSDT"
-        - side: "Buy" / "Sell"       (mapped from LONG/SHORT)
-        - timeframe: "5m", "15m", ...
-        - reason: e.g. "close_up_above_ma"
-        - ts_ms: bar timestamp
-        - est_rr: rough constant for now (0.25)
-        - sub_uid: logical owner of this signal (strategy's subaccount)
     """
     if side_text not in ("LONG", "SHORT"):
         return
@@ -331,6 +343,19 @@ def append_signal_jsonl(
         print(f"[signal_engine] Failed to append to {SIGNALS_PATH}: {e}")
 
 
+# ---------- Strategy helpers ----------
+
+def _get_strat_attr(s: Any, key: str, default: Any = None) -> Any:
+    """
+    Helper that works for both:
+      - dict-like strategies
+      - object-like strategies (e.g. dataclasses / Pydantic models)
+    """
+    if isinstance(s, dict):
+        return s.get(key, default)
+    return getattr(s, key, default)
+
+
 # ---------- Strategy-aware universe ----------
 
 def build_universe() -> Dict[Tuple[str, str], List[Dict[str, Any]]]:
@@ -351,16 +376,21 @@ def build_universe() -> Dict[Tuple[str, str], List[Dict[str, Any]]]:
             sub_strats = []
 
         for s in sub_strats:
-            sub_uid = str(s.get("sub_uid", "")).strip()
+            sub_uid_raw = _get_strat_attr(s, "sub_uid", "")
+            sub_uid = str(sub_uid_raw).strip()
             if not sub_uid:
                 continue
 
-            name = str(s.get("name", f"sub-{sub_uid}"))
-            symbols = s.get("symbols") or []
-            tfs = s.get("timeframes") or []
+            name_raw = _get_strat_attr(s, "name", None)
+            name = str(name_raw) if name_raw is not None else f"sub-{sub_uid}"
+
+            symbols = _get_strat_attr(s, "symbols", []) or []
+            tfs = _get_strat_attr(s, "timeframes", []) or []
 
             if not symbols or not tfs:
                 continue
+
+            automation_mode = _get_strat_attr(s, "automation_mode", None)
 
             for sym in symbols:
                 sym_u = str(sym).upper()
@@ -372,7 +402,7 @@ def build_universe() -> Dict[Tuple[str, str], List[Dict[str, Any]]]:
                         "name": name,
                         "symbols": symbols,
                         "timeframes": tfs,
-                        "automation_mode": s.get("automation_mode"),
+                        "automation_mode": automation_mode,
                         "raw": s,
                     }
                     universe.setdefault(key, []).append(entry)
@@ -400,6 +430,7 @@ def main() -> None:
     print(f"SIG_ENABLED:  {SIG_ENABLED}")
     print(f"SIG_DRY_RUN:  {SIG_DRY_RUN}")
     print(f"SIG_USE_STRATEGIES: {SIG_USE_STRATEGIES} (has_registry={_HAS_STRATEGY_REGISTRY})")
+    print(f"AI logging available: {_HAS_AI_HOOKS}")
     print(f"Universe symbols:    {all_symbols}")
     print(f"Universe timeframes: {all_tfs}")
     print(f"Poll every:          {SIG_POLL_SEC} sec")
@@ -418,9 +449,17 @@ def main() -> None:
         tg_info(msg)
         return
 
+    # Startup Telegram
     if SIG_USE_STRATEGIES and _HAS_STRATEGY_REGISTRY:
         try:
-            strat_names = [s.get("name", f"sub-{s.get('sub_uid')}") for s in stratreg.all_sub_strategies()]
+            strat_objs = stratreg.all_sub_strategies()
+            strat_names: List[str] = []
+            for s in strat_objs:
+                n = _get_strat_attr(s, "name", None)
+                if not n:
+                    su = _get_strat_attr(s, "sub_uid", None)
+                    n = f"sub-{su}"
+                strat_names.append(str(n))
         except Exception:
             strat_names = []
         tg_info(
@@ -428,17 +467,19 @@ def main() -> None:
             f"Symbols: {', '.join(all_symbols)}\n"
             f"TFs: {', '.join(tf_display(t) for t in all_tfs)}\n"
             f"Strategies: {', '.join(strat_names) or 'n/a'}\n"
-            f"Poll: {SIG_POLL_SEC}s | Heartbeat: {SIG_HEARTBEAT_SEC}s"
+            f"Poll: {SIG_POLL_SEC}s | Heartbeat: {SIG_HEARTBEAT_SEC}s\n"
+            f"AI logging: {'on' if _HAS_AI_HOOKS else 'OFF (stub)'}"
         )
     else:
         tg_info(
             "🚀 Signal Engine v2 started (fallback mode, .env universe).\n"
             f"Symbols: {', '.join(all_symbols)}\n"
             f"TFs: {', '.join(tf_display(t) for t in all_tfs)}\n"
-            f"Poll: {SIG_POLL_SEC}s | Heartbeat: {SIG_HEARTBEAT_SEC}s"
+            f"Poll: {SIG_POLL_SEC}s | Heartbeat: {SIG_HEARTBEAT_SEC}s\n"
+            f"AI logging: {'on' if _HAS_AI_HOOKS else 'OFF (stub)'}"
         )
 
-    # Keep track of last bar we emitted a signal for per (symbol, timeframe)
+    # Track last bar we emitted a signal for
     last_signal_bar: Dict[Tuple[str, str], int] = {}
 
     start_ts = time.time()
@@ -488,11 +529,11 @@ def main() -> None:
             applicable_strats: List[Dict[str, Any]] = strat_list or []
 
             if applicable_strats:
-                strat_names = ", ".join(s.get("name", f"sub-{s.get('sub_uid')}") for s in applicable_strats)
+                strat_names_str = ", ".join(s.get("name", f"sub-{s.get('sub_uid')}") for s in applicable_strats)
                 msg = (
                     f"📡 *Signal Engine v2* — {symbol} / {tf_label}\n"
                     f"Side: *{side}*\n"
-                    f"Strategies: `{strat_names}`\n"
+                    f"Strategies: `{strat_names_str}`\n"
                     f"Last close: `{last_c}` | MA({len([c['close'] for c in candles[-MA_LOOKBACK:]])}): `{ma}`\n"
                     f"Reason: `{reason}`\n"
                     f"(No orders placed here; executors handle trades.)"
@@ -610,7 +651,8 @@ def main() -> None:
                 f"- Symbols: {', '.join(all_symbols)}\n"
                 f"- TFs: {', '.join(tf_display(t) for t in all_tfs)}\n"
                 f"- Last loop signals: {total_signals_this_loop}\n"
-                f"- Using strategies: {SIG_USE_STRATEGIES and _HAS_STRATEGY_REGISTRY}"
+                f"- Using strategies: {SIG_USE_STRATEGIES and _HAS_STRATEGY_REGISTRY}\n"
+                f"- AI logging: {'on' if _HAS_AI_HOOKS else 'OFF (stub)'}"
             )
             tg_info(hb)
             next_heartbeat = now + SIG_HEARTBEAT_SEC
