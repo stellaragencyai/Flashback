@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Flashback — EMA Auto Trader (flashback03) v1.4
+Flashback — EMA Auto Trader (flashback03) v1.5
 
 Account binding:
     - Trades ONLY on the Bybit subaccount whose keys are in:
@@ -15,6 +15,10 @@ Features:
 - Liquidity + pump/dump filters
 - Spread + depth guard
 - 5% of equity per trade (RISK_ALLOC_PCT = 0.05)
+- ALWAYS attempts cross margin + MAX leverage per symbol:
+    • Reads leverageFilter.maxLeverage from /v5/market/instruments-info
+    • Calls /v5/position/switch-isolated with tradeMode=0 (cross)
+    • Calls /v5/position/set-leverage with that max value (buy/sell)
 - REAL 7 TP limit orders (reduce-only) at 2R, 4R, 6R, 8R, 10R, 12R, 14R
 - REAL hard SL (stop-market) at 2R from entry
 - Software trailing SL:
@@ -1100,6 +1104,57 @@ def update_trailing_for_open_positions(
     save_profiles(profiles)
 
 
+# -------------------- Leverage helpers (max leverage + cross) --------------------
+
+def get_symbol_max_leverage(inst: Dict[str, Any]) -> str:
+    """
+    Extract maxLeverage from instruments-info leverageFilter.
+    Fallback to '50' if not present, because Bybit.
+    """
+    lev_filter = inst.get("leverageFilter") or {}
+    max_lev = lev_filter.get("maxLeverage") or lev_filter.get("maxLeverageE")
+    if max_lev in (None, "", "0"):
+        return "50"
+    return str(max_lev)
+
+
+def ensure_cross_max_leverage(sym: str, inst: Dict[str, Any]) -> None:
+    """
+    Try to:
+      1) Switch margin mode to cross (tradeMode=0) for this symbol.
+      2) Set buyLeverage & sellLeverage to that symbol's max leverage.
+    Failures are logged but NOT fatal to the entry.
+    """
+    max_lev = get_symbol_max_leverage(inst)
+
+    # 1) Switch to cross margin (tradeMode=0) if possible
+    try:
+        body_mode = {
+            "category": CATEGORY,
+            "symbol": sym,
+            "tradeMode": 0,           # 0 = cross, 1 = isolated (per Bybit v5 docs)
+            "buyLeverage": max_lev,
+            "sellLeverage": max_lev,
+        }
+        bybit_request("POST", "/v5/position/switch-isolated", body=body_mode)
+        print(f"[{sym}] switched to CROSS margin, leverage={max_lev}x.")
+    except Exception as e:
+        print(f"[{sym}] switch-isolated (cross) failed: {e}")
+
+    # 2) Explicitly set leverage to max (in case margin mode already cross)
+    try:
+        body_lev = {
+            "category": CATEGORY,
+            "symbol": sym,
+            "buyLeverage": max_lev,
+            "sellLeverage": max_lev,
+        }
+        bybit_request("POST", "/v5/position/set-leverage", body=body_lev)
+        print(f"[{sym}] set-leverage to {max_lev}x (buy/sell).")
+    except Exception as e:
+        print(f"[{sym}] set-leverage failed: {e}")
+
+
 # -------------------- Equity-based max trades --------------------
 
 def max_trades_for_equity(eq: Decimal) -> int:
@@ -1120,13 +1175,13 @@ def max_trades_for_equity(eq: Decimal) -> int:
 # -------------------- Main loop --------------------
 
 def main_loop() -> None:
-    print(f"=== EMA Auto Trader v1.4 ({SUB_LABEL}) ===")
+    print(f"=== EMA Auto Trader v1.5 ({SUB_LABEL}) ===")
     print(f"Root: {ROOT}")
     print(f"State: {STATE_DIR}")
     print(f"Bybit base: {BYBIT_BASE}")
     print(f"recv_window: {BYBIT_RECV_WINDOW} ms")
 
-    # NEW: startup heartbeat to Telegram
+    # startup heartbeat to Telegram
     tg_send(
         "✅ EMA Auto Trader ONLINE\n"
         f"Sub: {SUB_LABEL}\n"
@@ -1229,6 +1284,9 @@ def main_loop() -> None:
 
                     if not spread_and_depth_ok(sym, direction, notional):
                         continue
+
+                    # *** NEW: enforce CROSS + MAX LEVERAGE for this symbol before entry ***
+                    ensure_cross_max_leverage(sym, inst)
 
                     print(
                         f"[{sym}] Signal {direction} @ {price} | notional≈{notional} | "
