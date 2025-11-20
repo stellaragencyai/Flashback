@@ -1,7 +1,13 @@
 # app/bots/tp_sl_manager.py
-# Flashback — TP/SL Manager v6
+# Flashback — TP/SL Manager v6.1
 #
-# Key upgrades (v6):
+# Key upgrades (v6.1):
+# - Safety gap on TP placement/amend:
+#     • Never places/amends TP orders so close to the current price that they
+#       get instantly filled just because you rebuilt the ladder.
+#     • Uses TPM_MIN_TP_GAP_TICKS (env) to enforce a minimum distance in ticks.
+#
+# Previous key upgrades (v6):
 # - 7-TP ladder support (strategy-aware exit profiles).
 # - Strategy-aware exit behavior:
 #     • Attempts to look up per-subaccount strategy from config/strategies.yaml.
@@ -23,7 +29,7 @@
 #     • Keeps SL attached via trading-stop helper (unless manual override).
 #     • ATR caching to avoid hammering indicators.
 #
-# New behavior (v4/v5 recap + v6):
+# Behavior recap:
 #   1) "No TP" watchdog:
 #      - On every cycle, for every open position, we inspect open orders.
 #      - If ALL TP orders have been canceled, we IMMEDIATELY rebuild the TP ladder
@@ -31,8 +37,8 @@
 #        avgPrice/size changed.
 #
 #   2) Manual TP override respect:
-#      - If we detect TP prices deviating significantly from our computed grid,
-#        we treat that symbol as "manual TP override":
+#      - If we detect TP prices deviating significantly from our computed grid by more than
+#        ~2 ticks, we treat that symbol as "manual TP override":
 #           • We STOP amending TP prices for that symbol.
 #           • We can still rebalance quantities to cover size (optional).
 #           • We send a one-time Telegram notice the first time this is seen.
@@ -40,7 +46,7 @@
 #           • Position is closed, or
 #           • All TPs are canceled and we rebuild from scratch.
 #
-#   3) Manual SL override (v6):
+#   3) Manual SL override:
 #      - If there's an existing stopLoss on the position that deviates by more
 #        than ~2 ticks from our computed base SL, we assume you manually moved it.
 #      - We then enter manual SL mode and DO NOT call set_stop_loss for that
@@ -61,6 +67,7 @@
 #     TPM_RESPECT_MANUAL_TPS=true|false   (default true)
 #     TPM_TRAIL_R_MULT=1.0        (R-multiple used for trailing distance)
 #     TPM_SL_R_MULT=2.2           (R-multiple used ONLY for SL distance from entry)
+#     TPM_MIN_TP_GAP_TICKS=5      (minimum ticks away from last price for auto TPs)
 #
 #   ATR_MULT, TP5_MAX_ATR_MULT, TP5_MAX_PCT, R_MIN_TICKS come from flashback_common or defaults.
 #   Note: TP5_* names are kept for backward compatibility; they still cap the *furthest* TP
@@ -135,6 +142,12 @@ _TRAIL_R_MULT = Decimal(os.getenv("TPM_TRAIL_R_MULT", "1.0"))
 
 # SL distance multiplier (relative to base R)
 SL_R_MULT = Decimal(os.getenv("TPM_SL_R_MULT", "2.2"))
+
+# Minimum TP gap in ticks from current price for auto-managed TPs
+try:
+    _MIN_TP_GAP_TICKS = int(os.getenv("TPM_MIN_TP_GAP_TICKS", "5"))
+except Exception:
+    _MIN_TP_GAP_TICKS = 5
 
 # ATR cache: symbol -> (ts, atr)
 _ATR_CACHE_TTL = int(os.getenv("TPM_ATR_CACHE_SEC", "60"))
@@ -315,6 +328,43 @@ def _get_exit_profile_for_position(p: dict) -> Dict[str, object]:
     return profile
 
 
+def _safe_tp_price(symbol: str, side_now: str, target_px: Decimal) -> Decimal:
+    """
+    Enforce a minimum distance between TP price and current market price.
+
+    For longs:
+        TP >= last_price + _MIN_TP_GAP_TICKS * tick
+    For shorts:
+        TP <= last_price - _MIN_TP_GAP_TICKS * tick
+
+    If we can't fetch price or the gap is disabled (<=0), we just return target_px.
+    """
+    try:
+        if _MIN_TP_GAP_TICKS <= 0:
+            return target_px
+
+        mkt = Decimal(str(last_price(symbol)))
+        if mkt <= 0:
+            return target_px
+
+        tick, _step, _ = get_ticks(symbol)
+        gap = tick * Decimal(_MIN_TP_GAP_TICKS)
+
+        if side_now.lower() == "buy":
+            min_px = mkt + gap
+            if target_px <= min_px:
+                target_px = min_px
+        else:
+            max_px = mkt - gap
+            if target_px >= max_px:
+                target_px = max_px
+
+        return psnap(target_px, tick)
+    except Exception:
+        # If anything explodes here, don't break exit logic; just return the original.
+        return target_px
+
+
 def _compute_trailing_sl(
     symbol: str,
     side_now: str,
@@ -402,10 +452,14 @@ def _compute_trailing_sl(
 
 def _amend_tp_order(symbol: str, order: dict,
                     new_qty: Optional[Decimal],
-                    new_price: Optional[Decimal]) -> None:
+                    new_price: Optional[Decimal],
+                    side_now: Optional[str] = None) -> None:
     """
     Amend a single TP order in place via REST /v5/order/amend.
     No blanket cancel/rebuild. If API fails, we log but don't crash.
+
+    If side_now and new_price are provided, new_price is first passed through
+    _safe_tp_price to avoid placing TPs too close to market.
     """
     body: Dict[str, str] = {
         "category": CATEGORY,
@@ -422,6 +476,8 @@ def _amend_tp_order(symbol: str, order: dict,
         return
 
     if new_price is not None:
+        if side_now is not None:
+            new_price = _safe_tp_price(symbol, side_now, new_price)
         body["price"] = str(new_price)
     if new_qty is not None:
         body["qty"] = str(new_qty)
@@ -473,11 +529,13 @@ def _sync_tp_ladder(symbol: str,
 
     Behavior:
       - If no TPs:
-          • place fresh `tp_count` reduce-only orders (or single mid TP if tiny).
+          • place fresh `tp_count` reduce-only orders (or single mid TP if tiny),
+            each price forced through _safe_tp_price.
       - If some TPs:
           • If TPM_RESPECT_MANUAL_TPS=true and we detect a manual override,
             we DO NOT amend TP prices; we only (optionally) rebalance qty.
-          • Otherwise: we amend TPs in place to match target prices / equal qty splits.
+          • Otherwise: we amend TPs in place to match target prices / equal qty splits,
+            with prices first corrected by _safe_tp_price so they are not too close.
       - Extra TPs (from manual tinkering) are left alone; we only manage up to CORE_TP_COUNT
         and only the first `tp_count` as the "core ladder".
     """
@@ -502,7 +560,8 @@ def _sync_tp_ladder(symbol: str,
             # Fallback: just use entry-nearest TP (if ever missing).
             mid_tp = tps[0] if tps else None
         if mid_tp is not None:
-            place_reduce_tp(symbol, side_now, qdown(size, step), mid_tp)
+            safe_mid = _safe_tp_price(symbol, side_now, mid_tp)
+            place_reduce_tp(symbol, side_now, qdown(size, step), safe_mid)
         return
 
     orders_all = _open_orders(symbol)
@@ -513,7 +572,8 @@ def _sync_tp_ladder(symbol: str,
         # If user nuked all TPs, we assume they want the bot back in charge.
         _MANUAL_TP_MODE.pop(symbol, None)
         for px in target_tps:
-            place_reduce_tp(symbol, side_now, each_default, px)
+            safe_px = _safe_tp_price(symbol, side_now, px)
+            place_reduce_tp(symbol, side_now, each_default, safe_px)
         return
 
     manual_mode = _MANUAL_TP_MODE.get(symbol, False)
@@ -551,6 +611,7 @@ def _sync_tp_ladder(symbol: str,
                     o,
                     new_qty=each_manual,
                     new_price=None,  # DO NOT touch price in manual mode
+                    side_now=None,
                 )
         return
 
@@ -565,7 +626,9 @@ def _sync_tp_ladder(symbol: str,
 
     # 1) Amend or place for each target level
     for idx in range(tp_count):
-        target_px = tps_sorted[idx]
+        raw_target_px = tps_sorted[idx]
+        target_px = _safe_tp_price(symbol, side_now, raw_target_px)
+
         if idx < len(managed_orders):
             o = managed_orders[idx]
             current_px = Decimal(o["price"])
@@ -580,6 +643,7 @@ def _sync_tp_ladder(symbol: str,
                     o,
                     new_qty=each_default if need_qty else None,
                     new_price=target_px if need_price else None,
+                    side_now=side_now,
                 )
         else:
             # Missing level: place a new TP
@@ -693,7 +757,8 @@ def _ensure_exits_for_position(p: dict,
         # 3) Attach/update SL (trading stop; Bybit handles idempotency)
         set_stop_loss(symbol, sl_effective)
 
-    # 4) Ensure TP ladder via amend-only logic (with manual TP override respect)
+    # 4) Ensure TP ladder via amend-only logic (with manual TP override respect
+    #    and TP safety-gap enforcement inside _sync_tp_ladder).
     _sync_tp_ladder(symbol, side_now, size, tps_full, tp_count=tp_count)
 
     # 5) Notify only on state change (entry/size)
@@ -723,7 +788,8 @@ def _loop_http_poll() -> None:
     - Polls positions every POLL_SECONDS
     - On every pass, for each open position, ensures:
         • SL (now trailing-aware, and respects manual override) is attached
-        • TP ladder exists (recreated immediately if user nuked it)
+        • TP ladder exists (recreated immediately if user nuked it), with TPs
+          kept at a safe distance from current price.
     - Uses amend-only TP logic and respects manual TP prices if enabled.
     """
     send_tg(f"🎛 Flashback TP/SL Manager started (HTTP mode, {POLL_SECONDS}s).")
@@ -937,20 +1003,17 @@ def loop():
           • Polls positions every POLL_SECONDS.
           • Ensures trailing SL + strategy-aware TP ladder on every pass.
           • Respect manual SL (if moved off our base by >2 ticks) and manual TPs.
+          • Enforces a safety gap between TP prices and current market to
+            avoid accidental instant fills when rebuilding ladders.
       - WS mode:
           • Reacts to private 'position' pushes near-instantly.
           • Falls back to HTTP mode on hard WS failure.
-
-    For your "absolutely unacceptable" TP-gap problem:
-      - HTTP mode still ALWAYS checks for missing TPs every POLL_SECONDS.
-      - If all TPs are canceled on an open position, they are rebuilt on the
-        very next poll, regardless of size/avgPrice changes.
     """
     if USE_WS:
         try:
             _loop_ws()
         except Exception as e:
-                # Hard failure in WS mode -> fall back to HTTP polling
+            # Hard failure in WS mode -> fall back to HTTP polling
             send_tg(f"[TP/SL] WS hard failure, falling back to HTTP mode: {e}")
             _loop_http_poll()
     else:
