@@ -36,8 +36,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-import hmac
-import hashlib
+import hmac  # kept, though auth now uses shared helper
+import hashlib  # kept, though auth now uses shared helper
 import os
 import time
 from dataclasses import dataclass, field
@@ -46,12 +46,17 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 import websockets
 
 from app.core.logger import get_logger
+from app.core.flashback_common import (
+    BYBIT_WS_PRIVATE_URL,      # shared WS private URL
+    build_ws_auth_payload,     # shared v5 WS auth builder
+)
 
 log = get_logger("ws_switchboard")
 
-# Default Bybit v5 private WS URL (override via env if needed)
-BYBIT_WS_PRIVATE = os.getenv("BYBIT_WS_PRIVATE", "wss://stream.bybit.com/v5/private")
-
+# Default Bybit v5 private WS URL:
+# - Prefer BYBIT_WS_PRIVATE if set (backward compat)
+# - Otherwise use shared BYBIT_WS_PRIVATE_URL from flashback_common
+BYBIT_WS_PRIVATE = os.getenv("BYBIT_WS_PRIVATE", BYBIT_WS_PRIVATE_URL)
 
 ExecutionHandler = Callable[[str, Dict[str, Any]], Awaitable[None]]
 PositionHandler = Callable[[str, Dict[str, Any]], Awaitable[None]]
@@ -108,7 +113,7 @@ class SubWsClient:
         log.info("WS[%s] connecting to %s", self.label, self.url)
 
         async with websockets.connect(self.url, ping_interval=None) as ws:
-            # AUTH
+            # AUTH (now using shared Bybit v5 helper)
             await self._auth(ws)
 
             # SUBSCRIBE to core private topics
@@ -131,22 +136,19 @@ class SubWsClient:
 
     async def _auth(self, ws: websockets.WebSocketClientProtocol) -> None:
         """
-        Send v5 auth message.
-        sign = HMAC_SHA256(secret, f"{timestamp}{api_key}{recvWindow}")
-        """
-        ts = str(int(time.time() * 1000))
-        recv_window = "5000"
-        pre_sign = f"{ts}{self.api_key}{recv_window}"
-        sign = hmac.new(
-            self.api_secret.encode("utf-8"),
-            pre_sign.encode("utf-8"),
-            hashlib.sha256,
-        ).hexdigest()
+        Send v5 auth message using shared flashback_common helper.
 
-        auth_msg = {
+        The helper builds:
+          {
             "op": "auth",
-            "args": [self.api_key, ts, sign, recv_window],
-        }
+            "args": [api_key, expires_ms, signature]
+          }
+
+        where:
+          signature = HMAC_SHA256(secret, f"GET/realtime{expires_ms}")
+        """
+        # Build auth payload with the shared, tested helper
+        auth_msg = build_ws_auth_payload(self.api_key, self.api_secret)
         await ws.send(json.dumps(auth_msg))
         log.info("WS[%s] auth sent", self.label)
 
@@ -159,6 +161,10 @@ class SubWsClient:
         except Exception:
             raise RuntimeError(f"WS[{self.label}] invalid auth response JSON: {raw!r}")
 
+        # Bybit usually responds with either:
+        #   {"op":"auth","success":true,...}
+        # or:
+        #   {"op":"auth","retCode":0,...}
         if resp.get("success") is not True and resp.get("retCode") not in (0, None):
             raise RuntimeError(f"WS[{self.label}] auth failed: {resp!r}")
 

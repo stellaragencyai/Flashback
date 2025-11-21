@@ -50,13 +50,11 @@ import contextlib
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 
-import hmac
-import hashlib
-import requests
 import traceback
 from dotenv import load_dotenv
 
 from app.core.notifier_bot import get_notifier
+from app.core.flashback_common import bybit_get  # NEW: use shared Bybit client
 
 # Optional: these may not exist yet, so we degrade gracefully
 try:
@@ -112,48 +110,7 @@ def send_tg(msg: str) -> None:
         # Never let Telegram kill the supervisor
         print(f"[SUPERVISOR][TG error] {msg}")
 
-# ---------- BYBIT AUTH & SUBACCOUNT CHECKS ----------
-
-def _bybit_signed_get(
-    path: str,
-    query: Dict[str, str],
-    api_key: str,
-    api_secret: str,
-    base_url: str,
-    timeout: float = 7.0,
-) -> requests.Response:
-    """
-    Minimal Bybit v5 signed GET helper.
-
-    Signature rule (v5 GET):
-      sign = HMAC_SHA256(secret, timestamp + api_key + recv_window + queryString)
-      queryString is the URL-encoded query in key-sorted order: k1=v1&k2=v2...
-    """
-    ts = str(int(time.time() * 1000))
-    recv_window = "5000"
-
-    # Build sorted query string
-    items = sorted(query.items())
-    query_string = "&".join(f"{k}={v}" for k, v in items)
-
-    pre_sign = f"{ts}{api_key}{recv_window}{query_string}"
-    sign = hmac.new(
-        api_secret.encode("utf-8"),
-        pre_sign.encode("utf-8"),
-        hashlib.sha256,
-    ).hexdigest()
-
-    headers = {
-        "X-BAPI-API-KEY": api_key,
-        "X-BAPI-SIGN": sign,
-        "X-BAPI-TIMESTAMP": ts,
-        "X-BAPI-RECV-WINDOW": recv_window,
-    }
-
-    url = f"{base_url}{path}"
-    resp = requests.get(url, headers=headers, params=query, timeout=timeout)
-    return resp
-
+# ---------- BYBIT SUBACCOUNT CHECKS (using shared flashback_common client) ----------
 
 def _load_subaccount_creds(prefix: str) -> Tuple[Optional[str], Optional[str]]:
     """
@@ -185,7 +142,7 @@ def check_subaccount(label: str, prefix: str) -> Dict[str, str]:
     Check a single subaccount:
       - If creds missing: status = MISSING_CREDS
       - If Bybit wallet-balance call works: status = OK, equity string
-      - Else: status = ERROR, detail with retCode/retMsg or exception
+      - Else: status = ERROR, detail with exception string
     """
     api_key, api_secret = _load_subaccount_creds(prefix)
     if not api_key or not api_secret:
@@ -198,61 +155,39 @@ def check_subaccount(label: str, prefix: str) -> Dict[str, str]:
         }
 
     try:
-        resp = _bybit_signed_get(
+        # Use shared, time-synced client from flashback_common
+        data = bybit_get(
             "/v5/account/wallet-balance",
             {"accountType": "UNIFIED", "coin": "USDT"},
-            api_key=api_key,
-            api_secret=api_secret,
-            base_url=BYBIT_BASE,
+            key=api_key,
+            secret=api_secret,
         )
     except Exception as e:
+        # bybit_get already handled 10002 resync / retries; anything here is "real"
         return {
             "label": label,
             "prefix": prefix,
             "status": "ERROR",
             "equity": "",
-            "detail": f"network err: {type(e).__name__}",
+            "detail": str(e),
         }
 
+    # Try to extract some equity info for the report
+    equity_str = ""
     try:
-        data = resp.json()
+        lst = data.get("result", {}).get("list", [])
+        if lst:
+            acct = lst[0]
+            equity_str = acct.get("totalEquity") or acct.get("totalWalletBalance") or ""
     except Exception:
-        return {
-            "label": label,
-            "prefix": prefix,
-            "status": "ERROR",
-            "equity": "",
-            "detail": f"http {resp.status_code}, invalid JSON",
-        }
-
-    ret_code = data.get("retCode")
-    ret_msg = data.get("retMsg", "")
-
-    if ret_code == 0:
-        # Try to extract some equity info for the report
         equity_str = ""
-        try:
-            lst = data.get("result", {}).get("list", [])
-            if lst:
-                acct = lst[0]
-                equity_str = acct.get("totalEquity") or acct.get("totalWalletBalance") or ""
-        except Exception:
-            equity_str = ""
-
-        return {
-            "label": label,
-            "prefix": prefix,
-            "status": "OK",
-            "equity": equity_str,
-            "detail": "",
-        }
 
     return {
         "label": label,
         "prefix": prefix,
-        "status": "ERROR",
-        "equity": "",
-        "detail": f"retCode={ret_code}, retMsg={ret_msg}",
+        "status": "OK",
+        "equity": equity_str,
+        "detail": "",
     }
 
 
