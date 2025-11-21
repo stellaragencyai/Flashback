@@ -54,7 +54,7 @@ from app.core.strategy_gate import (
     strategy_risk_pct,
 )
 from app.core.portfolio_guard import can_open_trade
-from app.core.flashback_common import get_equity_usdt
+from app.core.flashback_common import get_equity_usdt, record_heartbeat
 
 from app.ai.setup_memory_policy import get_risk_multiplier, get_min_ai_score
 
@@ -295,8 +295,6 @@ async def handle_strategy_signal(
         bound.warning("get_equity_usdt failed: %r; assuming equity=0.", e)
         equity_val = Decimal("0")
 
-    # If equity is non-positive, we still go through motions for testing,
-    # but sizing will naturally produce no trades.
     # bayesian_size is assumed to return (notional_usd, stop_distance)
     try:
         notional_usd, stop_distance = bayesian_size(
@@ -351,8 +349,6 @@ async def handle_strategy_signal(
         return
 
     # Approximate risk in USD (for logging / memory)
-    # If eff_risk_pct is a fraction of equity (e.g. 0.002 = 0.2%), this is exact.
-    # If it's already a %, it's just scaled, still directionally useful.
     try:
         risk_usd = equity_val * eff_risk_pct
     except Exception:
@@ -406,7 +402,7 @@ async def handle_strategy_signal(
     if mode_raw in ("LIVE_CANARY", "LIVE_FULL"):
         await execute_entry(
             symbol=symbol,
-            side=side,
+            signal_side=str(side),
             qty=float(qty_dec),
             price=price_f,
             strat=strat_id,
@@ -427,9 +423,23 @@ async def handle_strategy_signal(
 
 # ---------- EXECUTOR ---------- #
 
+def _normalize_order_side(signal_side: str) -> str:
+    """
+    Normalize signal side into Bybit API side ("Buy"/"Sell").
+    Accepts: "buy"/"sell"/"long"/"short" (case-insensitive).
+    """
+    s = str(signal_side or "").strip().lower()
+    if s in ("buy", "long"):
+        return "Buy"
+    if s in ("sell", "short"):
+        return "Sell"
+    # If some genius sends nonsense, fail loudly in logs.
+    raise ValueError(f"Unsupported side value for order: {signal_side!r}")
+
+
 async def execute_entry(
     symbol: str,
-    side: str,
+    signal_side: str,
     qty: float,
     price: float,
     strat: str,
@@ -437,6 +447,12 @@ async def execute_entry(
     bound_log,
 ) -> None:
     client = get_trade_client()
+    try:
+        order_side = _normalize_order_side(signal_side)
+    except ValueError as e:
+        bound_log.error("cannot normalize side %r for %s: %r", signal_side, symbol, e)
+        return
+
     # Unique orderLinkId so journal + setup_memory can join reliably
     order_link_id = f"{strat}-{int(time.time() * 1000)}"
 
@@ -444,7 +460,7 @@ async def execute_entry(
         resp = client.place_order(
             category="linear",
             symbol=symbol,
-            side=side,
+            side=order_side,
             qty=qty,
             orderType="Market",
             orderLinkId=order_link_id,
@@ -454,13 +470,13 @@ async def execute_entry(
             mode,
             strat,
             symbol,
-            side,
+            order_side,
             qty,
             resp,
         )
         try:
             tg_send(
-                f"🚀 Entry placed [{mode}/{strat}] {symbol} {side} qty={qty} "
+                f"🚀 Entry placed [{mode}/{strat}] {symbol} {order_side} qty={qty} "
                 f"linkId={order_link_id}"
             )
         except Exception as e:
@@ -469,7 +485,7 @@ async def execute_entry(
         bound_log.error(
             "order failed for %s %s qty=%s (strat=%s): %r",
             symbol,
-            side,
+            order_side,
             qty,
             strat,
             e,
@@ -484,6 +500,9 @@ async def executor_loop() -> None:
 
     while True:
         try:
+            # heartbeat for supervisor / liveness tracking
+            record_heartbeat("executor_v2")
+
             if not SIGNAL_FILE.exists():
                 await asyncio.sleep(0.5)
                 continue
