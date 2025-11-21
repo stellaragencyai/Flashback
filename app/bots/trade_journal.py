@@ -91,6 +91,7 @@ EXEC_BUS_PATH  = STATE_DIR / "ws_executions.jsonl"
 
 # Journal metadata
 ACCOUNT_LABEL     = "MAIN"
+EXEC_LABEL        = ACCOUNT_LABEL.lower()  # "main" for this journal
 JOURNAL_VERSION   = 42  # 4.2: startup snapshot refresh if side/size changed
 
 # Use dedicated journal notifier channel
@@ -620,8 +621,8 @@ def _iter_new_exec_rows_for_main(start_pos: int) -> Tuple[List[dict], int]:
                 except Exception:
                     continue
 
-                label = payload.get("label", "")
-                if label != "main":
+                label = str(payload.get("label", "")).lower()
+                if label != EXEC_LABEL:
                     continue
 
                 row = payload.get("row") or {}
