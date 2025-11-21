@@ -378,7 +378,7 @@ def _compute_trailing_sl(
 
     Behavior:
       - If trailing is disabled, returns base_sl.
-      - R is derived from distance between entry and first TP (or base_sl).
+      - R is derived from distance between entry and first TP (or entry/base_sl).
       - Trailing distance = R * TPM_TRAIL_R_MULT.
       - For longs:
           best = max(best, last_price)
@@ -692,7 +692,6 @@ def _ensure_exits_for_position(p: dict,
     symbol = p["symbol"]
     side_now = p["side"]  # "Buy"/"Sell"
     entry = Decimal(str(p["avgPrice"]))
-
     size = Decimal(str(p["size"]))
 
     if size <= 0:
@@ -829,27 +828,21 @@ def _ws_auth_payload() -> dict:
     Build auth message for private WS:
       op: "auth"
       args: [api_key, expires, signature]
-
-    Signature MUST follow Bybit v5 spec:
-      signature = HMAC_SHA256(secret, f"GET/realtime{expires}")
+    Signature = HMAC_SHA256(secret, f"{api_key}{expires}") in hex.
     """
     if not WS_KEY or not WS_SECRET:
         raise RuntimeError("Missing BYBIT_MAIN_TRADE_KEY / BYBIT_MAIN_TRADE_SECRET for WS auth")
 
-    # expires must be > current time in ms
-    expires = int((time.time() + 1) * 1000)
-
-    msg = f"GET/realtime{expires}"
+    expires = int(time.time() * 1000) + 5000  # ms in future
+    msg = f"{WS_KEY}{expires}"
     sig = hmac.new(
         WS_SECRET.encode("utf-8"),
         msg.encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()
-
     return {
         "op": "auth",
-        # Bybit expects expires as an integer, not string
-        "args": [WS_KEY, expires, sig],
+        "args": [WS_KEY, str(expires), sig],
     }
 
 
@@ -954,17 +947,7 @@ def _loop_ws() -> None:
             # Wait for auth OK
             raw = ws.recv()
             resp = json.loads(raw)
-
-            # Bybit has two styles of auth response in docs:
-            #  - old: {"success": true, "ret_msg": "", "op": "auth", ...}
-            #  - new: {"retCode": 0, "retMsg": "OK", "op": "auth", ...}
-            auth_ok = False
-            if "retCode" in resp:
-                auth_ok = (resp.get("retCode") == 0)
-            elif "success" in resp:
-                auth_ok = bool(resp.get("success"))
-
-            if not auth_ok:
+            if resp.get("retCode") != 0:
                 raise RuntimeError(f"WS auth failed: {resp}")
 
             # Subscribe to private position topic
