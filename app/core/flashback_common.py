@@ -9,6 +9,7 @@ import threading
 from decimal import Decimal, ROUND_DOWN
 from typing import Dict, Any, Tuple, List, Optional, Callable
 from urllib.parse import urlencode
+from pathlib import Path  # NEW: for heartbeat file handling
 
 import requests
 import orjson
@@ -23,6 +24,10 @@ load_dotenv()
 
 # --------- Constants & Config ----------
 BYBIT_BASE = os.getenv("BYBIT_BASE", "https://api.bybit.com").rstrip("/")
+
+# NEW: WebSocket URLs (shared across bots)
+BYBIT_WS_PUBLIC_URL = os.getenv("BYBIT_WS_PUBLIC_URL", "wss://stream.bybit.com/v5/public")
+BYBIT_WS_PRIVATE_URL = os.getenv("BYBIT_WS_PRIVATE_URL", "wss://stream.bybit.com/v5/private")
 
 # API keys (Main)
 KEY_READ   = os.getenv("BYBIT_MAIN_READ_KEY", "")
@@ -88,6 +93,11 @@ SWEEP_CUTOFF_HHMM    = os.getenv("SWEEP_CUTOFF_HHMM", "23:59")
 HTTP_TIMEOUT   = float(os.getenv("HTTP_TIMEOUT", "12"))
 RETRY_BACKOFFS = [0.5, 1.0, 2.0]  # seconds
 
+# NEW: Heartbeat file for bot liveness tracking
+HEARTBEAT_FILE = os.getenv("HEARTBEAT_FILE", ".state/heartbeats.json")
+_HEARTBEAT_LOCK = threading.Lock()
+
+
 # --------- Telegram (legacy simple sender) ----------
 def send_tg(text: str, main: bool = False) -> None:
     token = TG_TOKEN_MAIN if main else TG_TOKEN_NOTIF
@@ -103,6 +113,103 @@ def send_tg(text: str, main: bool = False) -> None:
     except Exception:
         # Telegram issues are not a reason to kill trading
         pass
+
+
+# NEW: Standardized bot error alert helper
+def alert_bot_error(bot_name: str, error: Any, severity: str = "WARN") -> None:
+    """
+    Lightweight, shared error → Telegram helper for bots.
+
+    Example:
+      alert_bot_error("tp_sl_manager", e, "ERROR")
+    """
+    try:
+        msg = f"⚠️ [{bot_name}] ({severity}) {error}"
+        send_tg(msg)
+    except Exception:
+        # Error reporting must never crash the bot
+        pass
+
+
+# NEW: Bot heartbeat helper
+def record_heartbeat(bot_name: str) -> None:
+    """
+    Record a lightweight heartbeat for a bot into HEARTBEAT_FILE.
+
+    Structure:
+      {
+        "tp_sl_manager": 1732103400,
+        "executor_v2": 1732103402,
+        ...
+      }
+
+    Bots should call this periodically from their main loop.
+    A separate health watcher can read this file and alert if a bot is stale.
+    """
+    try:
+        path = Path(HEARTBEAT_FILE)
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        with _HEARTBEAT_LOCK:
+            data: Dict[str, Any]
+            if path.exists():
+                try:
+                    raw = path.read_bytes()
+                    data = orjson.loads(raw) if raw else {}
+                    if not isinstance(data, dict):
+                        data = {}
+                except Exception:
+                    data = {}
+            else:
+                data = {}
+
+            data[str(bot_name)] = int(time.time())
+            path.write_bytes(orjson.dumps(data))
+    except Exception:
+        # Filesystem problems must not break trading
+        pass
+
+
+# NEW: Shared Bybit v5 WebSocket auth builder
+def build_ws_auth_payload(api_key: str, api_secret: str) -> Dict[str, Any]:
+    """
+    Build Bybit v5 private WebSocket auth payload.
+
+    Format:
+      {
+        "op": "auth",
+        "args": [api_key, expires_ms, signature]
+      }
+
+    Where:
+      expires_ms = current_time_ms + a small offset
+      signature  = HMAC_SHA256(api_secret, f"GET/realtime{expires_ms}")
+    """
+    if not api_key or not api_secret:
+        raise RuntimeError("Missing API key/secret for WS auth")
+
+    # Use a timestamp slightly in the future, per Bybit examples
+    expires = int((time.time() + 1) * 1000)
+    msg = f"GET/realtime{expires}"
+    sig = hmac.new(
+        api_secret.encode("utf-8"),
+        msg.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+    return {
+        "op": "auth",
+        "args": [api_key, expires, sig],
+    }
+
+
+def build_ws_auth_payload_main() -> Dict[str, Any]:
+    """
+    Convenience wrapper for main trading key.
+    Used by WS bots that authenticate as the MAIN unified account.
+    """
+    return build_ws_auth_payload(KEY_TRADE, SEC_TRADE)
+
 
 # --------- Time sync against Bybit (fix retCode 10002) ----------
 _TIME_OFFSET_MS = 0
