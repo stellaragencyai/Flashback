@@ -9,7 +9,7 @@ Single source of truth for answering questions like:
 
   • "Given this symbol + timeframe, which strategies care about it?"
   • "For sub_uid X, what is its risk, mode, and symbols/TFs?"
-  • "Is this strategy currently allowed to auto-trade or only paper log?"
+  • "Is this strategy currently allowed to auto-trade or only learn/paper?"
 
 This sits on top of:
     - config/strategies.yaml
@@ -20,27 +20,35 @@ Typical usage (executor, AI gate, dashboards):
         get_strategies_for_signal,
         get_strategy_for_sub,
         is_strategy_live,
+        is_strategy_enabled,
+        strategy_risk_pct,
     )
 
     sig = {"symbol": "BTCUSDT", "timeframe": "5m", "side": "LONG"}
     matches = get_strategies_for_signal(sig["symbol"], sig["timeframe"])
     for strat in matches:
-        if not is_strategy_active(strat):
+        if not is_strategy_enabled(strat):
             continue
         if is_strategy_live(strat):
-            # place real orders for strat["sub_uid"]
+            # LIVE_CANARY / LIVE_FULL entry logic
             ...
         else:
-            # PAPER or OFF -> log only
+            # LEARN_DRY / OFF -> logging / AI only
             ...
 
-Notes
------
-- Timeframes: the strategies.yaml uses raw intervals as strings ("1", "5", "15", "60"...).
-  The signal engine exposes a display version like "5m". Here we support both:
-      • strategy: "5", "15"
-      • signal: "5" or "5m"
-- automation_mode is normalized to UPPERCASE: OFF | PAPER | LIVE
+Modes (Option A)
+----------------
+We keep the richer 4-mode automation scheme used by executor_v2:
+
+    OFF         : ignore strategy
+    LEARN_DRY   : learn-only / paper mode (log, AI, no live orders)
+    LIVE_CANARY : small-size live trades (canary / experimental)
+    LIVE_FULL   : normal live trading
+
+Timeframes
+----------
+strategies.yaml uses raw minute intervals as strings ("1", "5", "15", "60", "240"...).
+Signal engine may emit "5", "5m", "1h", etc. We normalize both sides to raw minute strings.
 """
 
 from __future__ import annotations
@@ -52,6 +60,7 @@ from app.core import strategies as stratreg
 
 
 # --------- Helpers for timeframe normalization ---------
+
 
 def _normalize_tf(tf: str) -> str:
     """
@@ -95,22 +104,26 @@ def _normalize_tf(tf: str) -> str:
 
 # --------- Core accessors ---------
 
+
 def _normalized_strategies() -> List[Dict[str, Any]]:
     """
     Load all strategies and attach some normalized fields:
 
-        - "sub_uid_str": canonical string version of sub_uid
-        - "automation_mode_norm": OFF | PAPER | LIVE (default PAPER if missing)
-        - "symbols_norm": [uppercased symbols]
-        - "timeframes_norm": [normalized raw mins, as strings]
+        - "sub_uid_str"          : canonical string version of sub_uid
+        - "automation_mode_norm" : OFF | LEARN_DRY | LIVE_CANARY | LIVE_FULL
+        - "symbols_norm"         : [uppercased symbols]
+        - "timeframes_norm"      : [normalized raw mins, as strings]
     """
     out: List[Dict[str, Any]] = []
+
     for s in stratreg.all_sub_strategies():
         sub_uid = str(s.get("sub_uid"))
-        # normalize automation mode
-        mode = str(s.get("automation_mode", "PAPER")).strip().upper()
-        if mode not in ("OFF", "PAPER", "LIVE"):
-            mode = "PAPER"
+
+        # normalize automation mode into the 4-mode scheme used by executor_v2
+        mode_raw = str(s.get("automation_mode", "OFF")).strip().upper()
+        if mode_raw not in ("OFF", "LEARN_DRY", "LIVE_CANARY", "LIVE_FULL"):
+            # Fail-closed: any weird / missing value becomes OFF
+            mode_raw = "OFF"
 
         symbols_raw = s.get("symbols") or []
         tfs_raw = s.get("timeframes") or []
@@ -120,10 +133,11 @@ def _normalized_strategies() -> List[Dict[str, Any]]:
 
         wrapped = dict(s)
         wrapped["sub_uid_str"] = sub_uid
-        wrapped["automation_mode_norm"] = mode
+        wrapped["automation_mode_norm"] = mode_raw
         wrapped["symbols_norm"] = symbols_norm
         wrapped["timeframes_norm"] = tfs_norm
         out.append(wrapped)
+
     return out
 
 
@@ -171,7 +185,19 @@ def get_strategies_for_signal(symbol: str, timeframe: str) -> List[Dict[str, Any
     return matches
 
 
-# --------- Automation mode helpers ---------
+# --------- Automation mode helpers (4-mode aware) ---------
+
+
+def strategy_mode(strategy: Dict[str, Any]) -> str:
+    """
+    Return the normalized automation mode for a strategy:
+        OFF | LEARN_DRY | LIVE_CANARY | LIVE_FULL
+    """
+    mode = strategy.get("automation_mode_norm") or str(strategy.get("automation_mode", "")).upper().strip()
+    if mode not in ("OFF", "LEARN_DRY", "LIVE_CANARY", "LIVE_FULL"):
+        mode = "OFF"
+    return mode
+
 
 def is_strategy_enabled(strategy: Dict[str, Any]) -> bool:
     """
@@ -181,28 +207,52 @@ def is_strategy_enabled(strategy: Dict[str, Any]) -> bool:
     return bool(strategy.get("enabled", False))
 
 
-def is_strategy_live(strategy: Dict[str, Any]) -> bool:
-    """
-    Returns True if the strategy's automation_mode is LIVE.
-    """
-    mode = strategy.get("automation_mode_norm") or str(strategy.get("automation_mode", "")).upper()
-    return mode == "LIVE"
-
-
-def is_strategy_paper(strategy: Dict[str, Any]) -> bool:
-    """
-    Returns True if the strategy's automation_mode is PAPER.
-    """
-    mode = strategy.get("automation_mode_norm") or str(strategy.get("automation_mode", "")).upper()
-    return mode == "PAPER"
-
-
 def is_strategy_off(strategy: Dict[str, Any]) -> bool:
     """
     Returns True if the strategy's automation_mode is OFF.
     """
-    mode = strategy.get("automation_mode_norm") or str(strategy.get("automation_mode", "")).upper()
-    return mode == "OFF"
+    return strategy_mode(strategy) == "OFF"
+
+
+def is_strategy_learn_dry(strategy: Dict[str, Any]) -> bool:
+    """
+    Returns True if the strategy's automation_mode is LEARN_DRY
+    (learn-only / paper-style: AI + logging, no live orders).
+    """
+    return strategy_mode(strategy) == "LEARN_DRY"
+
+
+def is_strategy_live_canary(strategy: Dict[str, Any]) -> bool:
+    """
+    Returns True if the strategy's automation_mode is LIVE_CANARY.
+    """
+    return strategy_mode(strategy) == "LIVE_CANARY"
+
+
+def is_strategy_live_full(strategy: Dict[str, Any]) -> bool:
+    """
+    Returns True if the strategy's automation_mode is LIVE_FULL.
+    """
+    return strategy_mode(strategy) == "LIVE_FULL"
+
+
+def is_strategy_live(strategy: Dict[str, Any]) -> bool:
+    """
+    Convenience: returns True if the strategy is in ANY live mode:
+        LIVE_CANARY or LIVE_FULL
+    """
+    m = strategy_mode(strategy)
+    return m in ("LIVE_CANARY", "LIVE_FULL")
+
+
+def is_strategy_paper(strategy: Dict[str, Any]) -> bool:
+    """
+    Backwards-compatible helper: treat LEARN_DRY as 'paper' mode.
+    """
+    return strategy_mode(strategy) == "LEARN_DRY"
+
+
+# --------- Risk & concurrency helpers ---------
 
 
 def strategy_risk_pct(strategy: Dict[str, Any]) -> float:
@@ -236,12 +286,16 @@ def strategy_label(strategy: Dict[str, Any]) -> str:
     name = strategy.get("name") or stratreg.get_sub_label(str(sub_uid))
     return f"{name} (sub {sub_uid})"
 
+
 def should_strategy_handle(symbol: str, timeframe: str) -> Dict[str, Dict[str, Any]]:
     """
-    Adapter for executor_v2.
+    Adapter for callers that want a dict keyed by strategy name.
 
-    Given symbol + timeframe, return a dict:
-        {strategy_name: strategy_dict}
+    Given symbol + timeframe, return:
+        {
+          "<strategy_name>": <strategy_dict>,
+          ...
+        }
 
     Strategy name is taken from:
       - strategy["name"] if present
