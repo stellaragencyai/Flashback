@@ -5,12 +5,12 @@
 # - Up to 3 times per London day, ~8 hours apart:
 #       • Computes *incremental* realized PnL (USDT) on the main account
 #         since the last sweep, bounded to the current London day.
-#       • If incremental PnL > 0:
+#       • If incremental PnL > 0 and >= SWEEP_MIN_PNL_USD:
 #             Allocate per SWEEP_ALLOCATION (e.g., "80:MAIN,20:SUBS").
 #             · MAIN     -> no transfer; remains in main (UNIFIED)
 #             · FUNDING  -> UNIFIED -> FUNDING internal transfer
 #             · SUBS     -> round-robin UNIFIED -> sub UNIFIED (by MemberId UID list)
-#         If incremental PnL <= 0, it just reports and does nothing else.
+#         If incremental PnL <= 0 or below SWEEP_MIN_PNL_USD, it just reports and does nothing else.
 #
 # - Safety checks:
 #       • Won't transfer below MAIN_BAL_FLOOR_USD
@@ -40,6 +40,7 @@
 #   DRIP_MIN_USD
 #   SWEEPER_DRY_RUN      ("true"/"false")
 #   SWEEP_FORCE_RUN      ("true"/"false")
+#   SWEEP_MIN_PNL_USD    (minimum incremental PnL to trigger a sweep; default 0 = no threshold)
 
 import os
 import time
@@ -123,6 +124,12 @@ def _parse_bool(val, default=False):
 
 SWEEPER_DRY_RUN = _parse_bool(os.getenv("SWEEPER_DRY_RUN"), True)
 SWEEP_FORCE_RUN = _parse_bool(os.getenv("SWEEP_FORCE_RUN"), False)
+
+# Minimum incremental PnL threshold (USD) to trigger a sweep
+try:
+    SWEEP_MIN_PNL_USD = Decimal(str(os.getenv("SWEEP_MIN_PNL_USD", "0")))
+except Exception:
+    SWEEP_MIN_PNL_USD = Decimal("0")
 
 
 # --- Console + Telegram logging wrappers ---
@@ -338,7 +345,7 @@ def _parse_allocation(spec: str) -> List[Tuple[Decimal, str]]:
 
 def _sweep_once(now: datetime, state: dict, label: str = "") -> None:
     """
-    Execute a single sweep if incremental PnL is positive.
+    Execute a single sweep if incremental PnL is positive and above SWEEP_MIN_PNL_USD.
     Uses PnL from max(day_start, last_sweep_ms) .. now_ms.
     Updates state["sub_rr_index"] for round-robin SUBS distribution.
     """
@@ -370,11 +377,19 @@ def _sweep_once(now: datetime, state: dict, label: str = "") -> None:
 
     realized = _sum_realized_pnl_interval(start_ms, end_ms)
 
-    # Report even if <= 0
+    # Report even if <= 0 or below threshold
     if realized <= 0:
         log_info(
             f"📉 Incremental PnL (London {today_str} {label or ''} "
             f"{start_ms}->{end_ms}): {_fmt_usd(realized)} — no sweep."
+        )
+        return
+
+    if realized < SWEEP_MIN_PNL_USD:
+        log_info(
+            f"📉 Incremental PnL (London {today_str} {label or ''} "
+            f"{start_ms}->{end_ms}): {_fmt_usd(realized)} < "
+            f"min threshold {_fmt_usd(SWEEP_MIN_PNL_USD)} — no sweep."
         )
         return
 
@@ -410,6 +425,7 @@ def _sweep_once(now: datetime, state: dict, label: str = "") -> None:
             legs = adjusted
 
     subs = [x for x in SUB_UIDS_ROUND_ROBIN.split(",") if x.strip()]
+
     sub_count = len(subs)
     sub_rr_index = int(state.get("sub_rr_index", 0)) if sub_count > 0 else 0
 
@@ -485,7 +501,8 @@ def _sweep_once(now: datetime, state: dict, label: str = "") -> None:
         f"Incremental PnL: {_fmt_usd(realized)}\n"
         f"Equity:          {_fmt_usd(equity_dec)}\n"
         + "\n".join(f"• {d}" for d in details)
-        + f"\n\nSWEEPER_DRY_RUN: {'ON' if SWEEPER_DRY_RUN else 'OFF'}"
+        + f"\n\nSWEEPER_DRY_RUN: {'ON' if SWEEPER_DRY_RUN else 'OFF'}\n"
+        + f"SWEEP_MIN_PNL_USD: {_fmt_usd(SWEEP_MIN_PNL_USD)}"
     )
     log_info(msg)
 
@@ -495,6 +512,7 @@ def loop():
         "🧾 Flashback Profit Sweeper started (via supervisor).\n"
         f"SWEEPER_DRY_RUN: {'ON' if SWEEPER_DRY_RUN else 'OFF'}\n"
         f"SWEEP_FORCE_RUN: {'ON' if SWEEP_FORCE_RUN else 'OFF'}\n"
+        f"SWEEP_MIN_PNL_USD: {_fmt_usd(SWEEP_MIN_PNL_USD)}\n"
         f"State file: {STATE_PATH}\n"
         f"Schedule: up to 3 sweeps per London day, >= {SWEEP_INTERVAL_SECONDS / 3600:.0f}h apart."
     )
