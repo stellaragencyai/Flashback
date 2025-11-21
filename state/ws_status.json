@@ -2,17 +2,17 @@
   "main": {
     "label": "main",
     "status": "ERROR",
-    "updated_ms": 1763713403087,
-    "last_auth_ok_ms": 1763713402474,
-    "last_msg_ms": 1763713402782,
+    "updated_ms": 1763714407745,
+    "last_auth_ok_ms": 1763714407151,
+    "last_msg_ms": 1763714407449,
     "last_error": "WS[main] subscribe unauthorized: Request not authorized"
   },
   "flashback03": {
     "label": "flashback03",
     "status": "ERROR",
-    "updated_ms": 1763713403176,
-    "last_auth_ok_ms": 1763713402524,
-    "last_msg_ms": 1763713402870,
+    "updated_ms": 1763714407998,
+    "last_auth_ok_ms": 1763714407372,
+    "last_msg_ms": 1763714407685,
     "last_error": "WS[flashback03] subscribe unauthorized: Request not authorized"
   }
 }

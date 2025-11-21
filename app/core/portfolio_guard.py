@@ -394,30 +394,29 @@ async def handle_strategy_signal(
         bound.info("Portfolio guard blocked trade for %s: %s", symbol, guard_reason)
         return
 
-    # ---------- Feature logging (for setup memory) ---------- #
-    try:
-        ai_score = ai.get("score")
-        ai_reason = ai.get("reason", "")
-        features = ai.get("features") or {}
+# ---------- Feature logging (for setup memory) ---------- #
+try:
+    ai_score = ai.get("score")
+    ai_reason = ai.get("reason", "")
+    features = ai.get("features") or {}
 
-        log_features(
-            sub_uid=sub_uid,
-            strategy=strategy_name_label,
-            strategy_id=strat_id,
-            symbol=symbol,
-            side=side,
-            mode=trade_mode,
-            equity_usd=e
-quity_val,
-            risk_usd=risk_usd,
-            risk_pct=eff_risk_pct,
-            ai_score=float(ai_score) if ai_score is not None else 0.0,
-            ai_reason=str(ai_reason),
-            features=features,
-            signal=sig,
-        )
-    except Exception as e:
-        bound.warning("feature logging failed: %r", e)
+    log_features(
+        sub_uid=sub_uid,
+        strategy=strategy_name_label,
+        strategy_id=strat_id,
+        symbol=symbol,
+        side=side,
+        mode=trade_mode,
+        equity_usd=equity_val,
+        risk_usd=risk_usd,
+        risk_pct=eff_risk_pct,
+        ai_score=float(ai_score) if ai_score is not None else 0.0,
+        ai_reason=str(ai_reason),
+        features=features,
+        signal=sig,
+    )
+except Exception as e:
+    bound.warning("feature logging failed: %r", e)
 
     # ---------- Execute or paper log ---------- #
     if mode_raw in ("LIVE_CANARY", "LIVE_FULL"):
