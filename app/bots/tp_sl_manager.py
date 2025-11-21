@@ -1,5 +1,11 @@
 # app/bots/tp_sl_manager.py
-# Flashback — TP/SL Manager v6.1
+# Flashback — TP/SL Manager v6.2
+#
+# v6.2:
+# - FIXED WebSocket auth:
+#     • Uses shared build_ws_auth_payload_main() from flashback_common.
+#     • Correctly interprets both "retCode"-style and "success"-style auth responses.
+# - WS URL now comes from flashback_common.BYBIT_WS_PRIVATE_URL.
 #
 # Key upgrades (v6.1):
 # - Safety gap on TP placement/amend:
@@ -28,56 +34,10 @@
 #     • NEVER nukes the whole TP ladder on size change (amend-in-place).
 #     • Keeps SL attached via trading-stop helper (unless manual override).
 #     • ATR caching to avoid hammering indicators.
-#
-# Behavior recap:
-#   1) "No TP" watchdog:
-#      - On every cycle, for every open position, we inspect open orders.
-#      - If ALL TP orders have been canceled, we IMMEDIATELY rebuild the TP ladder
-#        (7 exits or a single mid TP for tiny positions), regardless of whether
-#        avgPrice/size changed.
-#
-#   2) Manual TP override respect:
-#      - If we detect TP prices deviating significantly from our computed grid by more than
-#        ~2 ticks, we treat that symbol as "manual TP override":
-#           • We STOP amending TP prices for that symbol.
-#           • We can still rebalance quantities to cover size (optional).
-#           • We send a one-time Telegram notice the first time this is seen.
-#      - Manual mode resets when:
-#           • Position is closed, or
-#           • All TPs are canceled and we rebuild from scratch.
-#
-#   3) Manual SL override:
-#      - If there's an existing stopLoss on the position that deviates by more
-#        than ~2 ticks from our computed base SL, we assume you manually moved it.
-#      - We then enter manual SL mode and DO NOT call set_stop_loss for that
-#        symbol anymore until the position is flat.
-#
-#   4) Exit profiles (strategy-aware):
-#      - Each strategy in config/strategies.yaml may define an exit_profile, e.g.:
-#           exit_profile:
-#             name: standard_7
-#             tp_count: 7
-#             trailing_sl: true
-#      - If absent, we fall back to DEFAULT_EXIT_PROFILE (7 TPs + trailing SL).
-#
-#   ENV knobs:
-#     TPM_USE_WEBSOCKET=true|false
-#     TPM_POLL_SECONDS=2          (HTTP mode only; also used as cadence for TP checks)
-#     TPM_ATR_CACHE_SEC=60
-#     TPM_RESPECT_MANUAL_TPS=true|false   (default true)
-#     TPM_TRAIL_R_MULT=1.0        (R-multiple used for trailing distance)
-#     TPM_SL_R_MULT=2.2           (R-multiple used ONLY for SL distance from entry)
-#     TPM_MIN_TP_GAP_TICKS=5      (minimum ticks away from last price for auto TPs)
-#
-#   ATR_MULT, TP5_MAX_ATR_MULT, TP5_MAX_PCT, R_MIN_TICKS come from flashback_common or defaults.
-#   Note: TP5_* names are kept for backward compatibility; they still cap the *furthest* TP
-#         even though we now use 7 levels.
 
 import os
 import time
 import json
-import hmac
-import hashlib
 from decimal import Decimal
 from typing import Dict, Tuple, List, Optional
 
@@ -94,6 +54,9 @@ from app.core.flashback_common import (
     set_stop_loss,
     cancel_all,      # kept for emergencies only; not used in normal flow
     place_reduce_tp,
+    # WS + helpers
+    BYBIT_WS_PRIVATE_URL,
+    build_ws_auth_payload_main,
 )
 
 # Optional websocket support (websocket-client)
@@ -126,13 +89,8 @@ CORE_TP_COUNT = 7
 # Polling cadence (HTTP mode only + safety watchdog)
 POLL_SECONDS = int(os.getenv("TPM_POLL_SECONDS", "2"))
 
-# WebSocket toggle & URL
+# WebSocket toggle
 USE_WS = os.getenv("TPM_USE_WEBSOCKET", "false").strip().lower() == "true"
-WS_PRIVATE_URL = os.getenv("BYBIT_WS_PRIVATE_URL", "wss://stream.bybit.com/v5/private")
-
-# HMAC creds for private WS auth (use trading key)
-WS_KEY = os.getenv("BYBIT_MAIN_TRADE_KEY", "")
-WS_SECRET = os.getenv("BYBIT_MAIN_TRADE_SECRET", "")
 
 # Respect manual TP modifications (prices) or not
 _RESPECT_MANUAL_TPS = os.getenv("TPM_RESPECT_MANUAL_TPS", "true").strip().lower() == "true"
@@ -222,8 +180,8 @@ def _compute_exit_grid(symbol: str, side_now: str, entry: Decimal) -> Tuple[Deci
       - TP spacing uses R_tp = R_base               (tighter rungs)
       - tpi = entry ± i*R_tp depending on side, for i in [1..CORE_TP_COUNT]
       - furthest TP capped by:
-          • TP5_MAX_ATR_MULT * ATR distance   (legacy name, still used as max-multiple)
-          • TP5_MAX_PCT% of entry             (legacy name, still used as max % band)
+          • TP5_MAX_ATR_MULT * ATR distance
+          • TP5_MAX_PCT% of entry
       - If cap is hit, R_tp is compressed so that tpn - entry == max_tp_dist.
     """
     tick, _step, _min_notional = get_ticks(symbol)
@@ -375,18 +333,6 @@ def _compute_trailing_sl(
 ) -> Decimal:
     """
     Compute a trailing SL based on best favorable price and R distance.
-
-    Behavior:
-      - If trailing is disabled, returns base_sl.
-      - R is derived from distance between entry and first TP (or entry/base_sl).
-      - Trailing distance = R * TPM_TRAIL_R_MULT.
-      - For longs:
-          best = max(best, last_price)
-          sl = max(base_sl, best - trail_dist)
-        For shorts:
-          best = min(best, last_price)
-          sl = min(base_sl, best + trail_dist)
-      - SL never "un-trails" (we don't move it away from price).
     """
     if not trailing_enabled or _TRAIL_R_MULT <= 0:
         return base_sl
@@ -394,7 +340,6 @@ def _compute_trailing_sl(
     try:
         price = Decimal(str(last_price(symbol)))
     except Exception:
-        # If we can't get price, just keep base SL.
         return base_sl
 
     if price <= 0:
@@ -426,7 +371,6 @@ def _compute_trailing_sl(
             if price > best:
                 best = price
         else:
-            # For shorts, "best" is the lowest price seen
             if price < best:
                 best = price
         state["best"] = best
@@ -435,14 +379,11 @@ def _compute_trailing_sl(
 
     if side_now.lower() == "buy":
         sl_candidate = best - trail_dist
-        # Never trail below the original base SL
         sl_new = max(base_sl, sl_candidate)
     else:
         sl_candidate = best + trail_dist
-        # For shorts, SL is above price; never trail above base SL
         sl_new = min(base_sl, sl_candidate)
 
-    # Snap to tick
     tick, _step, _ = get_ticks(symbol)
     sl_new = psnap(sl_new, tick)
 
@@ -457,9 +398,6 @@ def _amend_tp_order(symbol: str, order: dict,
     """
     Amend a single TP order in place via REST /v5/order/amend.
     No blanket cancel/rebuild. If API fails, we log but don't crash.
-
-    If side_now and new_price are provided, new_price is first passed through
-    _safe_tp_price to avoid placing TPs too close to market.
     """
     body: Dict[str, str] = {
         "category": CATEGORY,
@@ -472,7 +410,6 @@ def _amend_tp_order(symbol: str, order: dict,
     elif link_id:
         body["orderLinkId"] = link_id
     else:
-        # No identifier? Nothing we can safely amend.
         return
 
     if new_price is not None:
@@ -495,9 +432,6 @@ def _detect_manual_override(symbol: str,
     """
     Heuristic: if a majority of TP prices deviate from our ideal grid by more than
     ~2 ticks, assume the user manually moved them and enter manual TP mode.
-
-    This is deliberately forgiving. If you nudge one TP a bit we won't freak out,
-    but if you reshape the ladder, we stop fighting you.
     """
     if not tpo or not target_tps:
         return False
@@ -515,7 +449,6 @@ def _detect_manual_override(symbol: str,
         if abs(cur_prices[i] - tgt_sorted[i]) > (tick * 2):
             mismatches += 1
 
-    # Two or more TPs significantly off-grid => treating as manual override.
     return mismatches >= 2
 
 
@@ -526,18 +459,6 @@ def _sync_tp_ladder(symbol: str,
                     tp_count: int) -> None:
     """
     Ensure we have a TP ladder (up to CORE_TP_COUNT), **without** ever nuking the book.
-
-    Behavior:
-      - If no TPs:
-          • place fresh `tp_count` reduce-only orders (or single mid TP if tiny),
-            each price forced through _safe_tp_price.
-      - If some TPs:
-          • If TPM_RESPECT_MANUAL_TPS=true and we detect a manual override,
-            we DO NOT amend TP prices; we only (optionally) rebalance qty.
-          • Otherwise: we amend TPs in place to match target prices / equal qty splits,
-            with prices first corrected by _safe_tp_price so they are not too close.
-      - Extra TPs (from manual tinkering) are left alone; we only manage up to CORE_TP_COUNT
-        and only the first `tp_count` as the "core ladder".
     """
     # Clamp tp_count to sane range
     if tp_count <= 0:
@@ -552,12 +473,10 @@ def _sync_tp_ladder(symbol: str,
     # Very small positions: avoid zero-qty orders
     each_default = qdown(size / Decimal(tp_count), step)
     if each_default <= 0:
-        # Position too tiny for full split; place a single TP at mid ladder to avoid nonsense.
         if target_tps:
             mid_idx = min(len(target_tps) - 1, tp_count // 2)
             mid_tp = target_tps[mid_idx]
         else:
-            # Fallback: just use entry-nearest TP (if ever missing).
             mid_tp = tps[0] if tps else None
         if mid_tp is not None:
             safe_mid = _safe_tp_price(symbol, side_now, mid_tp)
@@ -569,7 +488,6 @@ def _sync_tp_ladder(symbol: str,
 
     # If no existing TP orders: just place the ladder and reset manual mode.
     if not tpo:
-        # If user nuked all TPs, we assume they want the bot back in charge.
         _MANUAL_TP_MODE.pop(symbol, None)
         for px in target_tps:
             safe_px = _safe_tp_price(symbol, side_now, px)
@@ -595,7 +513,6 @@ def _sync_tp_ladder(symbol: str,
     if manual_mode and _RESPECT_MANUAL_TPS:
         n = len(tpo)
         if n <= 0:
-            # Shouldn't happen; but if it does, treat as no TPs and rebuild next tick.
             _MANUAL_TP_MODE.pop(symbol, None)
             return
 
@@ -610,21 +527,18 @@ def _sync_tp_ladder(symbol: str,
                     symbol,
                     o,
                     new_qty=each_manual,
-                    new_price=None,  # DO NOT touch price in manual mode
+                    new_price=None,
                     side_now=None,
                 )
         return
 
     # --- Full auto mode (no manual override) below ---
 
-    # Sort both existing orders and target tps by price for consistent pairing
     tps_sorted = sorted(target_tps)
     tpo_sorted = sorted(tpo, key=lambda o: Decimal(o["price"]))
 
-    # We'll manage up to tp_count orders; any extras are ignored (but not canceled).
     managed_orders = tpo_sorted[:tp_count]
 
-    # 1) Amend or place for each target level
     for idx in range(tp_count):
         raw_target_px = tps_sorted[idx]
         target_px = _safe_tp_price(symbol, side_now, raw_target_px)
@@ -646,18 +560,12 @@ def _sync_tp_ladder(symbol: str,
                     side_now=side_now,
                 )
         else:
-            # Missing level: place a new TP
             place_reduce_tp(symbol, side_now, each_default, target_px)
-
-    # 2) We intentionally do NOT cancel “extra” orders here to avoid ever
-    #    having the book empty. Manual extra TPs are your problem.
 
 
 def _extract_existing_sl(p: dict) -> Optional[Decimal]:
     """
     Best-effort extraction of the current stop-loss price from a position dict.
-
-    Tries common Bybit field names.
     """
     raw = (
         p.get("stopLoss")
@@ -676,18 +584,7 @@ def _extract_existing_sl(p: dict) -> Optional[Decimal]:
 def _ensure_exits_for_position(p: dict,
                                seen_state: Dict[str, Tuple[Decimal, Decimal]]) -> None:
     """
-    For a single position record, ensure SL + TP ladder exist and are balanced with size.
-
-    Important changes:
-      - We NO LONGER skip work just because (avgPrice, size) didn't change.
-        We always check that TPs exist; if they're gone, we rebuild immediately.
-      - We only send the "Exits set" Telegram message when the position state changes,
-        to avoid spamming on every poll.
-      - Exit behavior is now strategy-aware:
-          • Uses per-sub strategy exit_profile when possible.
-          • Supports varying TP counts (up to CORE_TP_COUNT) and trailing SL toggle.
-      - Manual SL override:
-          • If the existing stopLoss is far from our base SL, we stop touching SL.
+    Ensure SL + TP ladder exist and are balanced with size for a single position.
     """
     symbol = p["symbol"]
     side_now = p["side"]  # "Buy"/"Sell"
@@ -695,7 +592,6 @@ def _ensure_exits_for_position(p: dict,
     size = Decimal(str(p["size"]))
 
     if size <= 0:
-        # Flat; nothing to do
         seen_state.pop(symbol, None)
         _MANUAL_TP_MODE.pop(symbol, None)
         _MANUAL_SL_MODE.pop(symbol, None)
@@ -705,22 +601,20 @@ def _ensure_exits_for_position(p: dict,
     prev_state = seen_state.get(symbol)
     state = (entry, size)
 
-    # 0) Exit profile (strategy-aware)
+    # Exit profile (strategy-aware)
     exit_profile = _get_exit_profile_for_position(p)
     tp_count = int(exit_profile.get("tp_count", CORE_TP_COUNT) or CORE_TP_COUNT)
     trailing_sl = bool(exit_profile.get("trailing_sl", True))
 
-    # 1) Compute grid (base SL + full CORE_TP_COUNT ladder)
+    # Compute grid
     base_sl, tps_full = _compute_exit_grid(symbol, side_now, entry)
 
-    # 1a) Detect / maintain manual SL override
+    # Manual SL override detection
     tick, _step, _ = get_ticks(symbol)
     existing_sl = _extract_existing_sl(p)
     manual_sl_mode = _MANUAL_SL_MODE.get(symbol, False)
 
     if existing_sl is not None:
-        # If we are NOT already in manual SL mode, see if user has moved SL
-        # far enough away from our base_sl to treat as override.
         if not manual_sl_mode:
             try:
                 if abs(existing_sl - base_sl) > (tick * 2):
@@ -734,15 +628,13 @@ def _ensure_exits_for_position(p: dict,
                     except Exception:
                         pass
             except Exception:
-                # If anything weird happens, don't explode; just don't mark manual.
                 pass
     else:
-        # No existing SL; if we were in manual mode, clear it (user removed SL).
         if manual_sl_mode:
             _MANUAL_SL_MODE.pop(symbol, None)
             manual_sl_mode = False
 
-    # 2) Compute trailing SL (if enabled AND not in manual SL mode)
+    # Trailing SL
     if manual_sl_mode and existing_sl is not None:
         sl_effective = existing_sl
     else:
@@ -754,14 +646,12 @@ def _ensure_exits_for_position(p: dict,
             tps=tps_full,
             trailing_enabled=trailing_sl,
         )
-        # 3) Attach/update SL (trading stop; Bybit handles idempotency)
         set_stop_loss(symbol, sl_effective)
 
-    # 4) Ensure TP ladder via amend-only logic (with manual TP override respect
-    #    and TP safety-gap enforcement inside _sync_tp_ladder).
+    # TP ladder
     _sync_tp_ladder(symbol, side_now, size, tps_full, tp_count=tp_count)
 
-    # 5) Notify only on state change (entry/size)
+    # Notify only on state change
     if prev_state != state:
         used_tps = tps_full[:tp_count]
         try:
@@ -771,10 +661,8 @@ def _ensure_exits_for_position(p: dict,
                 f"SL {sl_effective} | TPs {', '.join(map(str, used_tps))}"
             )
         except Exception:
-            # Don't die on Telegram errors
             pass
 
-    # 6) Track current state
     seen_state[symbol] = state
 
 
@@ -784,13 +672,7 @@ def _ensure_exits_for_position(p: dict,
 
 def _loop_http_poll() -> None:
     """
-    Legacy but now much safer/faster:
-    - Polls positions every POLL_SECONDS
-    - On every pass, for each open position, ensures:
-        • SL (now trailing-aware, and respects manual override) is attached
-        • TP ladder exists (recreated immediately if user nuked it), with TPs
-          kept at a safe distance from current price.
-    - Uses amend-only TP logic and respects manual TP prices if enabled.
+    Polls positions every POLL_SECONDS and enforces exits via REST.
     """
     send_tg(f"🎛 Flashback TP/SL Manager started (HTTP mode, {POLL_SECONDS}s).")
     seen: Dict[str, Tuple[Decimal, Decimal]] = {}
@@ -823,49 +705,10 @@ def _loop_http_poll() -> None:
 # WebSocket mode: private stream for positions
 # ---------------------------------------------------------------------------
 
-def _ws_auth_payload() -> dict:
-    """
-    Build auth message for private WS:
-      op: "auth"
-      args: [api_key, expires, signature]
-    Signature = HMAC_SHA256(secret, f"{api_key}{expires}") in hex.
-    """
-    if not WS_KEY or not WS_SECRET:
-        raise RuntimeError("Missing BYBIT_MAIN_TRADE_KEY / BYBIT_MAIN_TRADE_SECRET for WS auth")
-
-    expires = int(time.time() * 1000) + 5000  # ms in future
-    msg = f"{WS_KEY}{expires}"
-    sig = hmac.new(
-        WS_SECRET.encode("utf-8"),
-        msg.encode("utf-8"),
-        hashlib.sha256,
-    ).hexdigest()
-    return {
-        "op": "auth",
-        "args": [WS_KEY, str(expires), sig],
-    }
-
-
 def _handle_ws_position_message(msg: dict,
                                 seen: Dict[str, Tuple[Decimal, Decimal]]) -> None:
     """
     Handle a Bybit private 'position' topic push.
-    Expected shape (simplified):
-      {
-        "topic": "position",
-        "data": [
-          {
-            "symbol": "BTCUSDT",
-            "category": "linear",
-            "side": "Buy",
-            "size": "0.001",
-            "avgPrice": "61234.5",
-            "stopLoss": "61200.0",
-            ...
-          },
-          ...
-        ]
-      }
     """
     topic = msg.get("topic", "")
     if "position" not in topic:
@@ -887,27 +730,22 @@ def _handle_ws_position_message(msg: dict,
 
         size = Decimal(str(p.get("size", "0")))
         if size <= 0:
-            # Flat now; clear state
             seen.pop(symbol, None)
             _MANUAL_TP_MODE.pop(symbol, None)
             _MANUAL_SL_MODE.pop(symbol, None)
             _TRAIL_STATE.pop(symbol, None)
             continue
 
-        # Normalize to match REST shape (and keep any sub_uid-ish keys intact)
         norm = {
             "symbol": symbol,
             "side": p.get("side"),
             "avgPrice": p.get("avgPrice"),
             "size": p.get("size"),
-            # Pass through existing SL field if present
             "stopLoss": p.get("stopLoss") or p.get("stopLossPrice") or p.get("slPrice"),
-            # Pass through potential subaccount identifiers for strategy lookup
             "sub_uid": p.get("sub_uid") or p.get("subAccountId") or p.get("accountId") or p.get("subId"),
         }
         _ensure_exits_for_position(norm, seen_state=seen)
 
-    # Clean up any symbols that disappeared entirely
     for s in list(seen.keys()):
         if s not in current_symbols:
             seen.pop(s, None)
@@ -919,14 +757,10 @@ def _handle_ws_position_message(msg: dict,
 def _loop_ws() -> None:
     """
     WebSocket-only main loop:
-    - Connects to wss://stream.bybit.com/v5/private
-    - Authenticates
+    - Connects to BYBIT_WS_PRIVATE_URL
+    - Authenticates via build_ws_auth_payload_main()
     - Subscribes to "position" private topic
     - On each push, enforces SL + TP ladder with amend-only logic.
-
-    Note: TP recreation after cancel still works in WS mode, but if the
-    exchange stops sending position events while flat, HTTP mode will
-    remain the more predictable fallback.
     """
     if websocket is None:
         raise RuntimeError("websocket-client is not installed. pip install websocket-client")
@@ -938,16 +772,25 @@ def _loop_ws() -> None:
     while True:
         ws = None
         try:
-            # Short-ish timeout so we don't block forever on recv
-            ws = websocket.create_connection(WS_PRIVATE_URL, timeout=5)
-            # Auth
-            auth_msg = _ws_auth_payload()
+            ws = websocket.create_connection(BYBIT_WS_PRIVATE_URL, timeout=5)
+
+            # Auth using shared WS auth builder
+            auth_msg = build_ws_auth_payload_main()
             ws.send(json.dumps(auth_msg))
 
-            # Wait for auth OK
             raw = ws.recv()
             resp = json.loads(raw)
-            if resp.get("retCode") != 0:
+
+            # Handle both styles:
+            #  - {"retCode": 0, "retMsg": "OK", "op": "auth", ...}
+            #  - {"success": true, "ret_msg": "success", "op": "auth", ...}
+            auth_ok = False
+            if "retCode" in resp:
+                auth_ok = (resp.get("retCode") == 0)
+            elif "success" in resp:
+                auth_ok = bool(resp.get("success"))
+
+            if not auth_ok:
                 raise RuntimeError(f"WS auth failed: {resp}")
 
             # Subscribe to private position topic
@@ -957,7 +800,6 @@ def _loop_ws() -> None:
             last_ping = time.time()
 
             while True:
-                # Keepalive ping every ~15s
                 now = time.time()
                 if now - last_ping > 15:
                     ws.send(json.dumps({"op": "ping"}))
@@ -965,16 +807,13 @@ def _loop_ws() -> None:
 
                 raw = ws.recv()
                 if not raw:
-                    # Connection closed
                     raise RuntimeError("WS closed")
 
                 msg = json.loads(raw)
 
-                # Ignore pongs/heartbeat noise
                 if msg.get("op") in ("pong", "ping"):
                     continue
 
-                # Position pushes
                 if "topic" in msg and "position" in msg["topic"]:
                     _handle_ws_position_message(msg, seen=seen)
 
@@ -997,23 +836,11 @@ def loop():
     """
     Entry point called by supervisor.
     Chooses WebSocket mode or HTTP poll mode depending on TPM_USE_WEBSOCKET.
-
-    Behavior summary:
-      - HTTP mode:
-          • Polls positions every POLL_SECONDS.
-          • Ensures trailing SL + strategy-aware TP ladder on every pass.
-          • Respect manual SL (if moved off our base by >2 ticks) and manual TPs.
-          • Enforces a safety gap between TP prices and current market to
-            avoid accidental instant fills when rebuilding ladders.
-      - WS mode:
-          • Reacts to private 'position' pushes near-instantly.
-          • Falls back to HTTP mode on hard WS failure.
     """
     if USE_WS:
         try:
             _loop_ws()
         except Exception as e:
-            # Hard failure in WS mode -> fall back to HTTP polling
             send_tg(f"[TP/SL] WS hard failure, falling back to HTTP mode: {e}")
             _loop_http_poll()
     else:
