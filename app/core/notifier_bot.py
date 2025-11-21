@@ -5,7 +5,7 @@ Flashback — Central Telegram Notifier (env-compatible with current .env)
 
 Purpose:
 - Provide a single, sane place to send Telegram messages from all bots.
-- Support multiple Telegram bots (main + up to 10 sub-bots + journal bot + drip bot).
+- Support multiple Telegram bots (main + up to 10 sub-bots + journal bot + drip bot + profit_sweeper + health).
 - Enforce per-bot:
     • Rate limiting (no message floods).
     • Message de-duplication (no identical spam every second).
@@ -13,9 +13,9 @@ Purpose:
     • Severity levels: info / warn / error.
 - Simple API for bots:
 
-    from app.core.notifier_bot import get_notifier
+    from app.core.notifier_bot import get_notifier, tg_send
 
-    tg = get_notifier("flashback01")   # or "main", "journal", "drip"
+    tg = get_notifier("flashback01")   # or "main", "journal", "drip", "profit_sweeper", "health"
     tg.info("flashback01 bot started")
     tg.trade("Opened LONG BTCUSDT ...")
     tg.error("Exception in executor: ...")
@@ -37,6 +37,16 @@ ENV EXPECTATIONS (matches your current .env):
   TG_CHAT_DRIP=...
   TG_LEVEL_DRIP=info      # optional
 
+  # Profit Sweeper bot (for profit_sweeper.py)
+  TG_TOKEN_PROFIT_SWEEPER=...
+  TG_CHAT_PROFIT_SWEEPER=...
+  TG_LEVEL_PROFIT_SWEEPER=info  # optional
+
+  # Health / infra bot (supervisor, switchboard, etc.)
+  TG_TOKEN_HEALTH=...
+  TG_CHAT_HEALTH=...
+  TG_LEVEL_HEALTH=info    # optional
+
   # Subaccount bots
   TG_TOKEN_SUB_1=...
   TG_CHAT_SUB_1=...
@@ -44,14 +54,24 @@ ENV EXPECTATIONS (matches your current .env):
 
   ...
   TG_TOKEN_SUB_10=...
-  TG_CHAT_SUB_10=warn     # example
+  TG_CHAT_SUB_10=...
+  TG_LEVEL_SUB_10=warn    # example
 
-  # Global minimum levels (optional hard floors)
-  TG_MIN_LEVEL_MAIN=warn      # applies to "main" channel
-  TG_MIN_LEVEL_SUBS=info      # applies to flashback01..flashback10
+Global defaults:
+  TG_LEVEL_DEFAULT=info
+  TG_MAX_PER_30S=10                 # global default per-notifier rate
+  TG_MAX_PER_300S=80
 
-You MAY use the SAME chat id for all bots if you want a single stream.
-Or separate chats per bot; the code doesn’t care.
+Per-channel overrides:
+  TG_MAX_PER_30S_MAIN=5
+  TG_MAX_PER_300S_MAIN=40
+  TG_PREFIX_MAIN=[MAIN]
+
+  TG_MAX_PER_30S_JOURNAL=3
+  TG_PREFIX_JOURNAL=[JOURNAL]
+
+Error mirroring:
+  TG_MIRROR_ERRORS_TO_HEALTH=true|false   # mirror .error() from all channels into "health" (if configured)
 """
 
 from __future__ import annotations
@@ -105,7 +125,7 @@ def _safe_print(text: str) -> None:
 # Constants & config
 # ---------------------------------------------------------------------------
 
-# Rate limits (per notifier, i.e., per token+chat pair)
+# Rate limits (global defaults, per notifier)
 TG_MAX_PER_30S = int(os.getenv("TG_MAX_PER_30S", "10"))   # msgs per 30 seconds
 TG_MAX_PER_300S = int(os.getenv("TG_MAX_PER_300S", "80")) # msgs per 5 minutes
 
@@ -115,6 +135,16 @@ TG_DEDUP_WINDOW_SEC = int(os.getenv("TG_DEDUP_WINDOW_SEC", "30"))
 # Global timeout for Telegram requests
 TG_TIMEOUT_SEC = float(os.getenv("TG_TIMEOUT_SEC", "6.0"))
 
+# Mirror all .error(...) into "health" channel (if configured)
+def _parse_bool(val, default=False):
+    if val is None:
+        return default
+    if isinstance(val, bool):
+        return val
+    return str(val).strip().lower() in ("1", "true", "yes", "on")
+
+TG_MIRROR_ERRORS_TO_HEALTH = _parse_bool(os.getenv("TG_MIRROR_ERRORS_TO_HEALTH"), False)
+
 # Severity mapping
 _LEVEL_MAP = {
     "info": 10,
@@ -122,10 +152,6 @@ _LEVEL_MAP = {
     "warning": 20,
     "error": 30,
 }
-
-# Global min-level overrides (raw strings, parsed later)
-TG_MIN_LEVEL_MAIN_RAW = os.getenv("TG_MIN_LEVEL_MAIN")
-TG_MIN_LEVEL_SUBS_RAW = os.getenv("TG_MIN_LEVEL_SUBS")
 
 
 def _parse_level(s: Optional[str], default: str = "info") -> str:
@@ -135,6 +161,18 @@ def _parse_level(s: Optional[str], default: str = "info") -> str:
     return s if s in _LEVEL_MAP else default
 
 
+def _channel_env_suffix(name: str) -> str:
+    """
+    Convert logical channel name -> ENV suffix, e.g.:
+      "main"          -> "MAIN"
+      "journal"       -> "JOURNAL"
+      "flashback01"   -> "FLASHBACK01"
+      "profit_sweeper"-> "PROFIT_SWEEPER"
+      "health"        -> "HEALTH"
+    """
+    return name.strip().upper().replace("-", "_")
+
+
 # ---------------------------------------------------------------------------
 # Channel → env mapping (matches your .env naming)
 # ---------------------------------------------------------------------------
@@ -142,16 +180,19 @@ def _parse_level(s: Optional[str], default: str = "info") -> str:
 #   "main"
 #   "journal"
 #   "drip"
+#   "profit_sweeper"
+#   "health"
 #   "flashback01" .. "flashback10"
 #
 # These map to:
-#   main        -> TG_TOKEN_MAIN / TG_CHAT_MAIN / TG_LEVEL_MAIN
-#   journal     -> TG_TOKEN_JOURNAL / TG_CHAT_JOURNAL / TG_LEVEL_JOURNAL
-#   drip        -> TG_TOKEN_DRIP / TG_CHAT_DRIP / TG_LEVEL_DRIP
-#   flashback01 -> TG_TOKEN_SUB_1 / TG_CHAT_SUB_1 / TG_LEVEL_SUB_1
-#   flashback02 -> TG_TOKEN_SUB_2 / TG_CHAT_SUB_2 / TG_LEVEL_SUB_2
+#   main           -> TG_TOKEN_MAIN / TG_CHAT_MAIN / TG_LEVEL_MAIN
+#   journal        -> TG_TOKEN_JOURNAL / TG_CHAT_JOURNAL / TG_LEVEL_JOURNAL
+#   drip           -> TG_TOKEN_DRIP / TG_CHAT_DRIP / TG_LEVEL_DRIP
+#   profit_sweeper -> TG_TOKEN_PROFIT_SWEEPER / TG_CHAT_PROFIT_SWEEPER / TG_LEVEL_PROFIT_SWEEPER
+#   health         -> TG_TOKEN_HEALTH / TG_CHAT_HEALTH / TG_LEVEL_HEALTH
+#   flashback01    -> TG_TOKEN_SUB_1 / TG_CHAT_SUB_1 / TG_LEVEL_SUB_1
 #   ...
-#   flashback10 -> TG_TOKEN_SUB_10 / TG_CHAT_SUB_10 / TG_LEVEL_SUB_10
+#   flashback10    -> TG_TOKEN_SUB_10 / TG_CHAT_SUB_10 / TG_LEVEL_SUB_10
 
 CHANNEL_ENV_KEYS: Dict[str, Dict[str, str]] = {
     "main": {
@@ -169,6 +210,18 @@ CHANNEL_ENV_KEYS: Dict[str, Dict[str, str]] = {
         "token": "TG_TOKEN_DRIP",
         "chat": "TG_CHAT_DRIP",
         "level": "TG_LEVEL_DRIP",
+    },
+    # Profit Sweeper
+    "profit_sweeper": {
+        "token": "TG_TOKEN_PROFIT_SWEEPER",
+        "chat": "TG_CHAT_PROFIT_SWEEPER",
+        "level": "TG_LEVEL_PROFIT_SWEEPER",
+    },
+    # Health / infra channel
+    "health": {
+        "token": "TG_TOKEN_HEALTH",
+        "chat": "TG_CHAT_HEALTH",
+        "level": "TG_LEVEL_HEALTH",
     },
 }
 
@@ -212,6 +265,13 @@ class TelegramNotifier:
     min_level: str = "info"
     rate_state: _RateState = field(default_factory=_RateState)
 
+    # Per-channel rate limits (override global defaults if set)
+    max_per_30s: int = TG_MAX_PER_30S
+    max_per_300s: int = TG_MAX_PER_300S
+
+    # Optional channel prefix, e.g. "[MAIN]"
+    prefix: str = ""
+
     _session: requests.Session = field(default_factory=requests.Session, repr=False)
 
     # ---- Convenience flags -------------------------------------------------
@@ -248,43 +308,36 @@ class TelegramNotifier:
         """
         self._send(text, level=level)
 
+    # ---- Internal helpers --------------------------------------------------
+
+    def _apply_prefix(self, text: str) -> str:
+        if self.prefix:
+            return f"{self.prefix} {text}"
+        return text
+
     # ---- Core send logic ---------------------------------------------------
 
     def _send(self, text: str, level: str = "info") -> None:
         """
         Core send method with:
-          - severity filtering (per-channel + global min)
+          - severity filtering
           - mute handling
           - rate limiting
           - dedup
           - 429-aware backoff
+          - optional mirroring of errors to 'health'
         """
         if not self.token or not self.chat_id:
             _safe_print(f"[TG:{self.name}] No token/chat configured; skipping message.")
             return
 
         level = _parse_level(level)
-        msg_level_val = _LEVEL_MAP[level]
-
-        # Base min-level from this notifier's config
-        base_min_level = _parse_level(self.min_level, default="info")
-        base_min_val = _LEVEL_MAP[base_min_level]
-
-        # Global min overrides by channel class
-        if self.name == "main":
-            global_min_level = _parse_level(TG_MIN_LEVEL_MAIN_RAW, default=base_min_level)
-        elif self.name.startswith("flashback"):
-            global_min_level = _parse_level(TG_MIN_LEVEL_SUBS_RAW, default=base_min_level)
-        else:
-            global_min_level = base_min_level
-        global_min_val = _LEVEL_MAP[global_min_level]
-
-        # Effective minimum = max(per-channel, global)
-        effective_min_val = max(base_min_val, global_min_val)
-
-        if msg_level_val < effective_min_val:
-            # Below this notifier's effective minimum severity; ignore
+        if _LEVEL_MAP[level] < _LEVEL_MAP[self.min_level]:
+            # Below this notifier's minimum severity; ignore
             return
+
+        # Apply channel prefix
+        text = self._apply_prefix(text)
 
         now = time.time()
         rs = self.rate_state
@@ -302,7 +355,7 @@ class TelegramNotifier:
         # Rate limiting
         self._trim_rates(now)
 
-        if len(rs.last_30s) >= TG_MAX_PER_30S or len(rs.last_300s) >= TG_MAX_PER_300S:
+        if len(rs.last_30s) >= self.max_per_30s or len(rs.last_300s) >= self.max_per_300s:
             _safe_print(
                 f"[TG:{self.name}] Rate limit hit; "
                 f"dropping message. last_30s={len(rs.last_30s)}, last_300s={len(rs.last_300s)}"
@@ -345,6 +398,17 @@ class TelegramNotifier:
         if not resp.ok:
             _safe_print(f"[TG:{self.name}] HTTP {resp.status_code} error: {resp.text!r}")
 
+        # Optional: mirror errors to "health" channel
+        if TG_MIRROR_ERRORS_TO_HEALTH and level == "error" and self.name != "health":
+            try:
+                health = get_notifier("health")
+                if health.enabled:
+                    # no prefix from 'health' about itself, just tag original channel
+                    health.raw(f"[{self.name}] {text}", level="error")
+            except Exception:
+                # Don't let mirroring kill the original notifier
+                pass
+
     def _trim_rates(self, now: float) -> None:
         """Trim old timestamps from rate deques."""
         rs = self.rate_state
@@ -368,7 +432,8 @@ def _load_channel_config(name: str) -> TelegramNotifier:
     """
     Load token, chat_id, and level for a logical channel name.
 
-    name: "main", "journal", "drip", "flashback01", "flashback02", ..., "flashback10"
+    name: "main", "journal", "drip", "profit_sweeper", "health",
+          "flashback01", "flashback02", ..., "flashback10"
     """
     cfg = CHANNEL_ENV_KEYS.get(name, {})
     token_key = cfg.get("token")
@@ -385,17 +450,27 @@ def _load_channel_config(name: str) -> TelegramNotifier:
         level_raw = os.getenv("TG_LEVEL_DEFAULT", "info")
     level = _parse_level(level_raw, default="info")
 
+    # Per-channel rate overrides & prefix
+    suffix = _channel_env_suffix(name)
+    max_30 = int(os.getenv(f"TG_MAX_PER_30S_{suffix}", str(TG_MAX_PER_30S)))
+    max_300 = int(os.getenv(f"TG_MAX_PER_300S_{suffix}", str(TG_MAX_PER_300S)))
+    prefix = os.getenv(f"TG_PREFIX_{suffix}", "").strip()
+
     notifier = TelegramNotifier(
         name=name,
         token=token,
         chat_id=chat_id,
         min_level=level,
+        max_per_30s=max_30,
+        max_per_300s=max_300,
+        prefix=prefix,
     )
 
     token_hint = (token[:8] + "...") if token else "None"
     _safe_print(
         f"[TG:init] channel={name!r}, token_present={bool(token)}, "
-        f"token_prefix={token_hint}, chat_id={chat_id!r}, level={level}"
+        f"token_prefix={token_hint}, chat_id={chat_id!r}, level={level}, "
+        f"max_30s={max_30}, max_300s={max_300}, prefix={prefix!r}"
     )
 
     return notifier
@@ -408,15 +483,19 @@ def get_notifier(name: str = "main") -> TelegramNotifier:
     Usage:
         from app.core.notifier_bot import get_notifier
 
-        tg_main = get_notifier("main")
-        tg_fb01 = get_notifier("flashback01")
-        tg_journal = get_notifier("journal")
-        tg_drip = get_notifier("drip")
+        tg_main   = get_notifier("main")
+        tg_fb01   = get_notifier("flashback01")
+        tg_journal= get_notifier("journal")
+        tg_drip   = get_notifier("drip")
+        tg_ps     = get_notifier("profit_sweeper")
+        tg_health = get_notifier("health")
 
         tg_main.info("Supervisor starting...")
         tg_fb01.trade("flashback01: LONG BTCUSDT 25x at 61234.5")
         tg_journal.info("Journal: new closed trade logged.")
         tg_drip.info("Drip bot online.")
+        tg_ps.info("Profit sweeper run completed.")
+        tg_health.warn("WS bus stale for 15s.")
     """
     name = name.strip()
     if name in _NOTIFIERS:
@@ -460,7 +539,8 @@ def tg_send(
     """
     Backwards-compatible convenience wrapper used by older bots.
 
-    - channel: which notifier to use ("main", "journal", "drip", "flashback01", etc.)
+    - channel: which notifier to use ("main", "journal", "drip", "profit_sweeper",
+               "health", "flashback01", etc.)
     - level:   "info" | "error" | "trade"
     """
     try:
