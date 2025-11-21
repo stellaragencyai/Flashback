@@ -1,0 +1,9 @@
+{
+  "main": {
+    "last_msg_ms": 1732150000000,
+    "last_auth_ok_ms": 1732149900123,
+    "last_error": "Request not authorized",
+    "status": "AUTH_BLOCKED" | "OK" | "STALE"
+  },
+  "flashback03": { ... }
+}
