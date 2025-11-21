@@ -1,20 +1,21 @@
 # app/bots/trade_journal.py
-# Flashback — Trade Journal (Main, v4.2 — WS-driven, cleaner notifications + trade rating + guard-aware)
+# Flashback — Trade Journal (Main, v4.3 — WS-driven, cleaner notifications + trade rating + guard-aware)
 #
 # What it does (NOW WS-BASED)
 # - Consumes executions from state/ws_executions.jsonl (written by ws_switchboard).
 #   Each line:
 #       { "label": "main" | "flashback01" | ..., "ts": <epoch_ms>, "row": { ...Bybit exec row... } }
-# - Filters to label == "main" (this is MAIN journal).
+# - Filters to label == EXEC_LABEL (default "main" for MAIN journal).
 # - Classifies each new fill as ENTRY/ADD or PARTIAL EXIT based on current position side.
 # - On first entry per symbol: captures a rich OPEN snapshot:
 #       • symbol, side, direction (LONG/SHORT)
 #       • entry_price, size, leverage, init_margin
 #       • stop_loss, tp_prices, avg_rr_5
 #       • equity_at_open, entry_notional_usd
-#       • risk_per_unit, risk_usd, potential_reward_usd
+#       • risk_per_unit, risk_usd, risk_pct_equity_at_open, potential_reward_usd
 #       • entry_order_type (Market/Limit/..) and entry_liquidity (MAKER/TAKER)
 #       • order_link_id (for later strategy/sub mapping)
+#       • trade_id (stable journal ID for this position)
 #       • timestamps: ts_open_ms, ts_open_iso
 #       • num_adds, num_partials
 # - On each fill:
@@ -28,15 +29,24 @@
 #       • equity_after_close
 #       • rating_score (1–10) + rating_reason
 #       • guard_pnl_applied (bool) — whether Portfolio Guard was updated
+#       • trade_id (carried through from open snapshot)
 #
 # Files
 # - state/journal.jsonl           (append-only ledger of closed trades)
 # - state/journal_ws.cursor       (byte offset into ws_executions.jsonl)
 # - state/journal_open.json       (last known open snapshot per symbol)
 # - state/ws_executions.jsonl     (produced by ws_switchboard_bot)
+#
+# Relevant env overrides:
+#   JOURNAL_CATEGORY       (default "linear")
+#   JOURNAL_POLL_SECONDS   (default "1.0")
+#   JOURNAL_ACCOUNT_LABEL  (default "MAIN")
+#   JOURNAL_EXEC_LABEL     (default "<account_label.lower()>")
 
+import os
 import time
 import traceback
+from collections import defaultdict, deque
 from decimal import Decimal, ROUND_DOWN
 from pathlib import Path
 from typing import Dict, Tuple, List, Optional, Any
@@ -76,8 +86,16 @@ except ImportError:
     except ImportError:
         portfolio_guard = None  # type: ignore[assignment]
 
-CATEGORY = "linear"
-POLL_SECONDS = 1.0  # WS bus poll interval
+# Configurable product category & poll interval
+CATEGORY = os.getenv("JOURNAL_CATEGORY", "linear")
+POLL_SECONDS = float(os.getenv("JOURNAL_POLL_SECONDS", "1.0"))  # WS bus poll interval
+
+# Account / label configuration
+ACCOUNT_LABEL = os.getenv("JOURNAL_ACCOUNT_LABEL", "MAIN")
+EXEC_LABEL = os.getenv("JOURNAL_EXEC_LABEL", ACCOUNT_LABEL.lower()).lower()  # label from WS bus
+
+# Journal version bump (new fields: trade_id, risk_pct_equity_at_open, env-driven config)
+JOURNAL_VERSION = 43
 
 # Root + state dir, robust regardless of working dir
 ROOT: Path = getattr(settings, "ROOT", Path(__file__).resolve().parents[2])
@@ -89,10 +107,9 @@ CURSOR_PATH    = STATE_DIR / "journal_ws.cursor"
 OPEN_STATE     = STATE_DIR / "journal_open.json"
 EXEC_BUS_PATH  = STATE_DIR / "ws_executions.jsonl"
 
-# Journal metadata
-ACCOUNT_LABEL     = "MAIN"
-EXEC_LABEL        = ACCOUNT_LABEL.lower()  # "main" for this journal
-JOURNAL_VERSION   = 42  # 4.2: startup snapshot refresh if side/size changed
+# Execution deduplication: per-symbol LRU of execIds
+_EXEC_SEEN_MAX = 500
+_EXEC_SEEN: Dict[str, deque] = defaultdict(deque)
 
 # Use dedicated journal notifier channel
 tg = get_notifier("journal")
@@ -203,6 +220,15 @@ def _fmt_pnl(x: Any, places: int = 2) -> str:
     d = d.quantize(q, rounding=ROUND_DOWN)
     return f"${d}"
 
+
+def _make_trade_id(symbol: str, ts_ms: int) -> str:
+    """
+    Generate a short, opaque trade_id for journaling.
+    Not cryptographically special, just unique-ish per position.
+    """
+    base = f"{symbol}:{ts_ms}"
+    return hex(abs(hash(base)) & 0xFFFFFFFF)[2:]
+
 # ---------- grid inference (fallback if TPs not yet visible) ----------
 
 def _kline_infer_grid(symbol: str, side_now: str, entry: Decimal) -> Tuple[Decimal, List[Decimal]]:
@@ -301,7 +327,7 @@ def _risk_from_snapshot(
 # ---------- trade rating ----------
 
 def _rate_trade(
-    *,
+    *c,
     result: str,
     realized_rr: Optional[Decimal],
     risk_usd: Optional[Decimal],
@@ -404,24 +430,38 @@ def _notify_new_trade(snap: dict) -> None:
     pot = _fmt_usd_str(snap.get("potential_reward_usd"))
     tps = snap.get("tp_prices") or []
     order_link_id = snap.get("order_link_id")
+    trade_id = snap.get("trade_id")
+    risk_pct = snap.get("risk_pct_equity_at_open")
 
     tps_str = ", ".join(tps[:5])
 
     msg_lines = [
         "🟢 NEW TRADE",
-        "",
-        f"📊 {symbol} {direction}",
-        "",
-        f"📥 Entry: {entry}",
-        f"📏 Size: {size}",
-        f"⚖️ Lev: {lev}",
-        "",
-        f"🛡 SL: {sl}",
-        f"💸 Risk: {risk}",
-        f"📈 RR≈{rr}",
-        "",
-        f"🎯 TPs: {tps_str}",
     ]
+    if trade_id:
+        msg_lines.append(f"🧾 ID: {trade_id}")
+    msg_lines.extend(
+        [
+            "",
+            f"📊 {symbol} {direction}",
+            "",
+            f"📥 Entry: {entry}",
+            f"📏 Size: {size}",
+            f"⚖️ Lev: {lev}",
+            "",
+            f"🛡 SL: {sl}",
+            f"💸 Risk: {risk}",
+            f"📈 RR≈{rr}",
+        ]
+    )
+    if risk_pct is not None:
+        msg_lines.append(f"📊 Risk: {risk_pct}% of equity")
+    msg_lines.extend(
+        [
+            "",
+            f"🎯 TPs: {tps_str}",
+        ]
+    )
     if order_link_id:
         msg_lines.append("")
         msg_lines.append(f"🔗 LinkId: {order_link_id}")
@@ -489,6 +529,7 @@ def _notify_close_summary(
     rating = row.get("rating_score")
     result = row.get("result", "UNKNOWN")
     order_link_id = row.get("order_link_id")
+    trade_id = row.get("trade_id")
 
     # PnL formatting with $ and limited decimals
     pnl_str = _fmt_pnl(pnl_raw, places=2)
@@ -507,19 +548,25 @@ def _notify_close_summary(
 
     msg_lines = [
         f"🔴 TRADE CLOSED {flag}",
-        "",
-        f"📊 {sym} {direction}",
-        "",
-        f"💰 PnL: {pnl_str} | RR: {rr_str}",
-        "",
-        f"⏱ Duration: {dur}",
-        "",
-        f"💼 Equity: {eq_open} → {eq_after}",
-        "",
-        f"📌 Adds: {num_adds} | Partials: {num_partials}",
-        "",
-        f"⭐ Rating: {rating}/10 | Guard: {guard_flag}",
     ]
+    if trade_id:
+        msg_lines.append(f"🧾 ID: {trade_id}")
+    msg_lines.extend(
+        [
+            "",
+            f"📊 {sym} {direction}",
+            "",
+            f"💰 PnL: {pnl_str} | RR: {rr_str}",
+            "",
+            f"⏱ Duration: {dur}",
+            "",
+            f"💼 Equity: {eq_open} → {eq_after}",
+            "",
+            f"📌 Adds: {num_adds} | Partials: {num_partials}",
+            "",
+            f"⭐ Rating: {rating}/10 | Guard: {guard_flag}",
+        ]
+    )
     if order_link_id:
         msg_lines.append("")
         msg_lines.append(f"🔗 LinkId: {order_link_id}")
@@ -571,11 +618,30 @@ def _entry_order_meta(e: dict) -> Tuple[Optional[str], Optional[str], Optional[s
     order_link_id = e.get("orderLinkId") or None
     return otype, liq, order_link_id
 
+
+def _exec_seen_before(symbol: str, exec_id: Optional[str]) -> bool:
+    """
+    Deduplicate executions by execId per symbol to avoid double-counting
+    if ws_executions.jsonl replays.
+    """
+    if not exec_id:
+        return False
+    dq = _EXEC_SEEN[symbol]
+    if exec_id in dq:
+        return True
+    dq.append(exec_id)
+    if len(dq) > _EXEC_SEEN_MAX:
+        dq.popleft()
+    return False
+
 # ---------- helpers for final pnl ----------
 
 def _closed_pnl_latest(symbol: str) -> Tuple[Optional[Decimal], Optional[Decimal]]:
     try:
-        r = bybit_get("/v5/position/closed-pnl", {"category": CATEGORY, "symbol": symbol, "limit": "1"})
+        r = bybit_get(
+            "/v5/position/closed-pnl",
+            {"category": CATEGORY, "symbol": symbol, "limit": "1"},
+        )
         rows = (r.get("result", {}) or {}).get("list", []) or []
         if not rows:
             return None, None
@@ -592,7 +658,7 @@ def _closed_pnl_latest(symbol: str) -> Tuple[Optional[Decimal], Optional[Decimal
 def _iter_new_exec_rows_for_main(start_pos: int) -> Tuple[List[dict], int]:
     """
     Reads new lines from state/ws_executions.jsonl starting at byte offset start_pos.
-    Returns (list_of_exec_rows_for_MAIN, new_pos).
+    Returns (list_of_exec_rows_for_EXEC_LABEL, new_pos).
     """
     if not EXEC_BUS_PATH.exists():
         return [], start_pos
@@ -636,7 +702,11 @@ def _iter_new_exec_rows_for_main(start_pos: int) -> Tuple[List[dict], int]:
 # ---------- main loop ----------
 
 def loop():
-    tg.info("📝 Flashback Trade Journal v4.2 (WS-driven, guard-aware, clean output) started.")
+    tg.info(
+        "📝 Flashback Trade Journal v4.3 (WS-driven, guard-aware, clean output) started.\n"
+        f"Account: {ACCOUNT_LABEL} | Exec label: {EXEC_LABEL} | Poll: {POLL_SECONDS}s\n"
+        f"Ledger: {JOURNAL_LEDGER}"
+    )
     open_state: Dict[str, dict] = _load_open_state()
     cursor_pos: int = _load_cursor_pos()
 
@@ -689,10 +759,24 @@ def loop():
         if sl is None:
             sl = sl_f
         rr = _avg_rr(entry, sl, tps_f)
-        eq_open = get_equity_usdt()
+        eq_open_raw = get_equity_usdt()
+        try:
+            eq_open_dec = Decimal(str(eq_open_raw))
+        except Exception:
+            eq_open_dec = None
+
         risk_per_unit, risk_usd, potential_reward = _risk_from_snapshot(entry, sl, size, rr)
 
+        risk_pct_equity = None
+        if risk_usd is not None and eq_open_dec is not None and eq_open_dec > 0:
+            try:
+                risk_pct_equity = (risk_usd / eq_open_dec) * Decimal("100")
+            except Exception:
+                risk_pct_equity = None
+
         ts_open = _now_ms()
+        trade_id = _make_trade_id(sym, ts_open)
+
         snap = {
             "ts_open": ts_open,
             "ts_open_iso": _to_iso(ts_open),
@@ -709,11 +793,13 @@ def loop():
             "avg_rr_5": str(rr) if rr is not None else None,
             "risk_per_unit": _fmt_dec(risk_per_unit, places=4),
             "risk_usd": _fmt_dec(risk_usd, places=2),
+            "risk_pct_equity_at_open": _fmt_dec(risk_pct_equity, places=2) if risk_pct_equity is not None else None,
             "potential_reward_usd": _fmt_dec(potential_reward, places=2),
-            "equity_at_open": _fmt_dec(eq_open, places=2),
+            "equity_at_open": _fmt_dec(eq_open_dec, places=2) if eq_open_dec is not None else None,
             "entry_order_type": None,
             "entry_liquidity": None,
             "order_link_id": None,
+            "trade_id": trade_id,
             "num_adds": 0,
             "num_partials": 0,
             "account": ACCOUNT_LABEL,
@@ -727,7 +813,7 @@ def loop():
 
     while True:
         try:
-            # 1) Pull new executions from WS bus for MAIN
+            # 1) Pull new executions from WS bus for EXEC_LABEL
             rows, new_pos = _iter_new_exec_rows_for_main(cursor_pos)
             if new_pos != cursor_pos:
                 cursor_pos = new_pos
@@ -750,6 +836,12 @@ def loop():
                 symbol = e.get("symbol")
                 side_exec = _side_from_exec(e)
                 if not symbol or not side_exec:
+                    continue
+
+                # Exec-level dedup by execId per symbol
+                exec_id_raw = e.get("execId") or e.get("execID")
+                exec_id = str(exec_id_raw) if exec_id_raw is not None else None
+                if _exec_seen_before(symbol, exec_id):
                     continue
 
                 try:
@@ -794,11 +886,26 @@ def loop():
                             if sl is None:
                                 sl = sl_f
                             rr = _avg_rr(entry, sl, tps_f)
-                            eq_open = get_equity_usdt()
+                            eq_open_raw = get_equity_usdt()
+                            try:
+                                eq_open_dec = Decimal(str(eq_open_raw))
+                            except Exception:
+                                eq_open_dec = None
+
                             risk_per_unit, risk_usd, potential_reward = _risk_from_snapshot(entry, sl, size, rr)
+
+                            risk_pct_equity = None
+                            if risk_usd is not None and eq_open_dec is not None and eq_open_dec > 0:
+                                try:
+                                    risk_pct_equity = (risk_usd / eq_open_dec) * Decimal("100")
+                                except Exception:
+                                    risk_pct_equity = None
+
                             order_type, liquidity, order_link_id = _entry_order_meta(e)
 
                             ts_open = ts or _now_ms()
+                            trade_id = _make_trade_id(symbol, ts_open)
+
                             snap = {
                                 "ts_open": ts_open,
                                 "ts_open_iso": _to_iso(ts_open),
@@ -815,11 +922,13 @@ def loop():
                                 "avg_rr_5": str(rr) if rr is not None else None,
                                 "risk_per_unit": _fmt_dec(risk_per_unit, places=4),
                                 "risk_usd": _fmt_dec(risk_usd, places=2),
+                                "risk_pct_equity_at_open": _fmt_dec(risk_pct_equity, places=2) if risk_pct_equity is not None else None,
                                 "potential_reward_usd": _fmt_dec(potential_reward, places=2),
-                                "equity_at_open": _fmt_dec(eq_open, places=2),
+                                "equity_at_open": _fmt_dec(eq_open_dec, places=2) if eq_open_dec is not None else None,
                                 "entry_order_type": order_type,
                                 "entry_liquidity": liquidity,
                                 "order_link_id": order_link_id,
+                                "trade_id": trade_id,
                                 "num_adds": 0,
                                 "num_partials": 0,
                                 "account": ACCOUNT_LABEL,
@@ -885,7 +994,11 @@ def loop():
                     else:
                         result = "BREAKEVEN"
 
-                    eq_after = get_equity_usdt()
+                    eq_after_raw = get_equity_usdt()
+                    try:
+                        eq_after_dec = Decimal(str(eq_after_raw))
+                    except Exception:
+                        eq_after_dec = None
 
                     num_adds = int(open_row.get("num_adds", 0) or 0)
                     num_partials = int(open_row.get("num_partials", 0) or 0)
@@ -920,13 +1033,15 @@ def loop():
                         "realized_rr": _fmt_dec(realized_rr, places=2) if realized_rr is not None else None,
                         "result": result,
                         "exit_price": str(exit_px) if exit_px is not None else None,
-                        "equity_after_close": _fmt_dec(eq_after, places=2),
+                        "equity_after_close": _fmt_dec(eq_after_dec, places=2) if eq_after_dec is not None else None,
                         "symbol": sym,
                         "account": open_row.get("account", ACCOUNT_LABEL),
                         "journal_version": open_row.get("journal_version", JOURNAL_VERSION),
                         "rating_score": rating_score,
                         "rating_reason": rating_reason,
                         "guard_pnl_applied": guard_applied,
+                        # Ensure trade_id is present even if older snapshots didn't have it
+                        "trade_id": open_row.get("trade_id") or _make_trade_id(sym, open_row.get("ts_open", now_ms)),
                     }
                     _write_jsonl(row)
 
