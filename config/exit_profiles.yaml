@@ -1,0 +1,35 @@
+# Flashback — Exit Profiles
+
+profiles:
+  Standard-5:
+    description: "5 TP ladder, 1R spacing, 5 targets"
+    tps:
+      - { rr: 1.0, size_pct: 0.20 }
+      - { rr: 2.0, size_pct: 0.20 }
+      - { rr: 3.0, size_pct: 0.20 }
+      - { rr: 4.0, size_pct: 0.20 }
+      - { rr: 5.0, size_pct: 0.20 }
+    sl:
+      rr: -1.0
+
+  Aggressive-5:
+    description: "Faster partials"
+    tps:
+      - { rr: 0.8, size_pct: 0.25 }
+      - { rr: 1.6, size_pct: 0.25 }
+      - { rr: 2.4, size_pct: 0.20 }
+      - { rr: 3.2, size_pct: 0.15 }
+      - { rr: 4.0, size_pct: 0.15 }
+    sl:
+      rr: -1.0
+
+  Conservative-5:
+    description: "Slower ladder, more back-loaded"
+    tps:
+      - { rr: 1.5, size_pct: 0.10 }
+      - { rr: 2.5, size_pct: 0.15 }
+      - { rr: 3.5, size_pct: 0.20 }
+      - { rr: 4.5, size_pct: 0.25 }
+      - { rr: 6.0, size_pct: 0.30 }
+    sl:
+      rr: -1.0

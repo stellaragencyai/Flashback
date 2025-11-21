@@ -44,8 +44,11 @@ ENV EXPECTATIONS (matches your current .env):
 
   ...
   TG_TOKEN_SUB_10=...
-  TG_CHAT_SUB_10=...
-  TG_LEVEL_SUB_10=warn    # example
+  TG_CHAT_SUB_10=warn     # example
+
+  # Global minimum levels (optional hard floors)
+  TG_MIN_LEVEL_MAIN=warn      # applies to "main" channel
+  TG_MIN_LEVEL_SUBS=info      # applies to flashback01..flashback10
 
 You MAY use the SAME chat id for all bots if you want a single stream.
 Or separate chats per bot; the code doesn’t care.
@@ -119,6 +122,10 @@ _LEVEL_MAP = {
     "warning": 20,
     "error": 30,
 }
+
+# Global min-level overrides (raw strings, parsed later)
+TG_MIN_LEVEL_MAIN_RAW = os.getenv("TG_MIN_LEVEL_MAIN")
+TG_MIN_LEVEL_SUBS_RAW = os.getenv("TG_MIN_LEVEL_SUBS")
 
 
 def _parse_level(s: Optional[str], default: str = "info") -> str:
@@ -246,7 +253,7 @@ class TelegramNotifier:
     def _send(self, text: str, level: str = "info") -> None:
         """
         Core send method with:
-          - severity filtering
+          - severity filtering (per-channel + global min)
           - mute handling
           - rate limiting
           - dedup
@@ -257,8 +264,26 @@ class TelegramNotifier:
             return
 
         level = _parse_level(level)
-        if _LEVEL_MAP[level] < _LEVEL_MAP[self.min_level]:
-            # Below this notifier's minimum severity; ignore
+        msg_level_val = _LEVEL_MAP[level]
+
+        # Base min-level from this notifier's config
+        base_min_level = _parse_level(self.min_level, default="info")
+        base_min_val = _LEVEL_MAP[base_min_level]
+
+        # Global min overrides by channel class
+        if self.name == "main":
+            global_min_level = _parse_level(TG_MIN_LEVEL_MAIN_RAW, default=base_min_level)
+        elif self.name.startswith("flashback"):
+            global_min_level = _parse_level(TG_MIN_LEVEL_SUBS_RAW, default=base_min_level)
+        else:
+            global_min_level = base_min_level
+        global_min_val = _LEVEL_MAP[global_min_level]
+
+        # Effective minimum = max(per-channel, global)
+        effective_min_val = max(base_min_val, global_min_val)
+
+        if msg_level_val < effective_min_val:
+            # Below this notifier's effective minimum severity; ignore
             return
 
         now = time.time()
@@ -425,6 +450,7 @@ def _startup_summary() -> None:
 
 
 _startup_summary()
+
 
 def tg_send(
     msg: str,

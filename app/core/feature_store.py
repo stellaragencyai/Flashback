@@ -13,7 +13,6 @@ Each record is a single JSONL row with:
   - symbol, side, mode (PAPER/LIVE_CANARY/LIVE_FULL)
   - equity_usd, risk_usd, risk_pct
   - ai_score, ai_reason
-  - order_link_id (strategy-aware tag connecting to journal & executions)
   - signal metadata (reason, timeframe, raw signal)
   - feature vector used by the AI gate (flattened into JSON)
 
@@ -84,7 +83,6 @@ def log_trade_open(
     ai_reason: str,
     features: Dict[str, Any],
     signal: Dict[str, Any],
-    order_link_id: Optional[str] = None,
 ) -> None:
     """
     Append a single trade-open feature snapshot to JSONL.
@@ -116,8 +114,6 @@ def log_trade_open(
         "ai_score": _to_float(ai_score),
         "ai_reason": ai_reason,
 
-        "order_link_id": order_link_id,
-
         "signal_reason": signal.get("reason"),
         "signal_timeframe": signal.get("timeframe") or signal.get("tf"),
         "signal_raw": signal,   # full raw signal dict for later forensic / training
@@ -136,28 +132,14 @@ def log_trade_open(
 # Backward-compat shim for older code expecting `log_features(...)`
 # ----------------------------------------------------------------------
 
-def log_features(
-    *,
-    sub_uid: str,
-    strategy: str,
-    strategy_id: Optional[str],
-    symbol: str,
-    side: str,
-    mode: str,
-    equity_usd: Decimal,
-    risk_usd: Decimal,
-    risk_pct: Decimal,
-    ai_score: float,
-    ai_reason: str,
-    features: Dict[str, Any],
-    signal: Dict[str, Any],
-    order_link_id: Optional[str] = None,
-) -> None:
+def log_features(*, sub_uid: str, strategy: str, strategy_id: Optional[str],
+                 symbol: str, side: str, mode: str,
+                 equity_usd: Decimal, risk_usd: Decimal, risk_pct: Decimal,
+                 ai_score: float, ai_reason: str,
+                 features: Dict[str, Any], signal: Dict[str, Any]) -> None:
     """
     Back-compat wrapper so older executor code importing `log_features`
     still works. Internally delegates to `log_trade_open`.
-
-    `order_link_id` is optional; if not provided, row just won't have it.
     """
     return log_trade_open(
         sub_uid=sub_uid,
@@ -173,5 +155,4 @@ def log_features(
         ai_reason=ai_reason,
         features=features,
         signal=signal,
-        order_link_id=order_link_id,
     )
