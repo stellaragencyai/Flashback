@@ -1,419 +1,558 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Flashback — Portfolio Guard (global breaker + daily risk brain)
+Flashback — Auto Executor v2 (Strategy-aware, multi-sub, AI-gated, policy-aware)
 
 Purpose
 -------
-Single source of truth for:
-  - Daily equity anchor (session_start_equity)
-  - Running PnL (realized + unrealized)
-  - Daily loss limits (absolute + %)
-  - Global breaker state (ON/OFF + reason)
+- Consume signals from an append-only JSONL file (signals/observed.jsonl).
+- For EACH strategy defined in config/strategies.yaml:
+    • Check symbol + timeframe match via strategy_gate.
+    • Check enabled + automation mode.
+    • Run AI gating (classifier + min-score policy).
+    • Run correlation gate.
+    • Size entries (bayesian + risk_capped, policy-adjusted risk).
+    • Log feature snapshot for setup memory.
+    • Place live or paper entries depending on automation_mode.
 
-This module wraps the guard_state helpers provided by core.db / app.core.db:
-  - guard_load() -> Dict[str, Any]
-  - guard_update_pnl(delta_realized_usd: Decimal, delta_unrealized_usd: Decimal = 0) -> None
-  - guard_reset_day(equity_now_usd: Decimal) -> None
+Automation modes
+----------------
+- OFF         : ignore strategy.
+- LEARN_DRY   : run AI + logging, NO live orders (paper / learning only).
+- LIVE_CANARY : live orders with small risk (as per strategies.yaml + policy).
+- LIVE_FULL   : normal live trading (once proven).
 
-Bots that should call this:
-  - Executor:
-      • Before opening *any* new trade, call can_open_trade(...).
-  - Risk / PnL trackers:
-      • When fills occur, call record_pnl(...).
-  - Higher level controllers:
-      • May call trip_breaker(...) / clear_breaker(...).
+Exits:
+- TP/SL handled by a separate bot (tp_sl_manager).
 
-Env / config knobs
-------------------
-PG_MAX_DAILY_LOSS_PCT     (float, default 3.0)   -> Max % loss from daily anchor
-PG_MAX_DAILY_LOSS_USD     (float, default 0.0)   -> Absolute loss cap (0 = disabled)
-PG_MAX_RISK_PER_TRADE_PCT (float, default 0.75)  -> Max % of *equity_now* risk per trade
-PG_MAX_RISK_PER_TRADE_USD (float, default 0.0)   -> Absolute per-trade risk cap (0 = disabled)
-PG_NOTIFY_BREAKER         (bool, default true)   -> Telegram notifications on trips
+Notes
+-----
+- Stateless across runs except for the cursor file.
+- Strategy definitions live in config/strategies.yaml.
 """
 
 from __future__ import annotations
 
-import os
-import datetime as _dt
-from decimal import Decimal, InvalidOperation
-from typing import Any, Dict, Tuple, Optional
+import json
+import asyncio
+import time
+from decimal import Decimal
+from pathlib import Path
+from typing import Dict, Optional, Tuple, List, Any
 
-# --------------------------------------------------------------------------
-# DB guard state helpers (tolerant imports)
-# --------------------------------------------------------------------------
+from app.core.config import settings
+from app.core.logger import get_logger, bind_context
+from app.core.bybit_client import Bybit
+from app.core.notifier_bot import tg_send
+from app.core.feature_store import log_features
+from app.core.trade_classifier import classify as classify_trade
+from app.core.corr_gate_v2 import allow as corr_allow
+from app.core.sizing import bayesian_size, risk_capped_qty
+from app.core.strategy_gate import (
+    get_strategies_for_signal,
+    strategy_label,
+    strategy_risk_pct,
+)
+from app.core.portfolio_guard import can_open_trade
+from app.core.flashback_common import get_equity_usdt
 
-try:
-    # Preferred: top-level core package
-    from core.db import guard_load, guard_update_pnl, guard_reset_day  # type: ignore
-except Exception:
+from app.ai.setup_memory_policy import get_risk_multiplier, get_min_ai_score
+
+
+log = get_logger("executor_v2")
+
+# Paths
+ROOT: Path = settings.ROOT
+SIGNAL_FILE: Path = ROOT / "signals" / "observed.jsonl"
+CURSOR_FILE: Path = ROOT / "state" / "observed.cursor"
+
+SIGNAL_FILE.parent.mkdir(parents=True, exist_ok=True)
+CURSOR_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+# Single shared Bybit client (trade key)
+_BYBIT_TRADE_CLIENT: Optional[Bybit] = None
+
+
+# ---------- CURSOR HELPERS ---------- #
+
+def load_cursor() -> int:
+    if not CURSOR_FILE.exists():
+        return 0
     try:
-        # Fallback: app.core package
-        from app.core.db import guard_load, guard_update_pnl, guard_reset_day  # type: ignore
-    except Exception as e:  # pragma: no cover
-        # If this fails, your DB wiring is broken. Let it raise.
-        raise ImportError("Portfolio Guard cannot import DB guard helpers") from e
-
-# --------------------------------------------------------------------------
-# Telegram notifier (tolerant)
-# --------------------------------------------------------------------------
-
-try:
-    from core.flashback_common import send_tg  # type: ignore
-except Exception:
-    try:
-        from app.core.flashback_common import send_tg  # type: ignore
+        return int(CURSOR_FILE.read_text().strip() or "0")
     except Exception:
-        # Very last resort: no-op if import fails
-        def send_tg(msg: str) -> None:  # type: ignore
-            return
+        return 0
 
 
-# --------------------------------------------------------------------------
-# Config
-# --------------------------------------------------------------------------
-
-def _to_decimal(val: str, default: Decimal) -> Decimal:
+def save_cursor(pos: int) -> None:
     try:
-        return Decimal(str(val))
-    except (InvalidOperation, TypeError, ValueError):
-        return default
+        CURSOR_FILE.write_text(str(pos))
+    except Exception as e:
+        log.warning("failed to save cursor %s: %r", pos, e)
 
 
-def _env_decimal(name: str, default: str) -> Decimal:
-    raw = os.getenv(name, default)
-    return _to_decimal(raw, Decimal(default))
+# ---------- BYBIT CLIENT HELPER ---------- #
+
+def get_trade_client() -> Bybit:
+    global _BYBIT_TRADE_CLIENT
+    if _BYBIT_TRADE_CLIENT is None:
+        _BYBIT_TRADE_CLIENT = Bybit("trade")
+    return _BYBIT_TRADE_CLIENT
 
 
-class GuardConfig:
-    """Configuration for portfolio guard thresholds."""
+# ---------- AI GATE WRAPPER ---------- #
 
-    def __init__(self) -> None:
-        # Max DAILY drawdown from daily anchor (percentage)
-        self.max_daily_loss_pct: Decimal = _env_decimal("PG_MAX_DAILY_LOSS_PCT", "3.0")
-
-        # Max DAILY absolute loss in USD (0 => disabled)
-        self.max_daily_loss_usd: Decimal = _env_decimal("PG_MAX_DAILY_LOSS_USD", "0.0")
-
-        # Per-trade risk cap (% of current equity)
-        self.max_risk_per_trade_pct: Decimal = _env_decimal(
-            "PG_MAX_RISK_PER_TRADE_PCT",
-            "0.75",
-        )
-
-        # Per-trade absolute risk cap (0 => disabled)
-        self.max_risk_per_trade_usd: Decimal = _env_decimal(
-            "PG_MAX_RISK_PER_TRADE_USD",
-            "0.0",
-        )
-
-        # Notify on breaker trips
-        self.notify_breaker: bool = (
-            os.getenv("PG_NOTIFY_BREAKER", "true").strip().lower() == "true"
-        )
-
-
-_CFG = GuardConfig()
-
-
-# --------------------------------------------------------------------------
-# State helpers
-# --------------------------------------------------------------------------
-
-def _normalize_state(raw: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+def run_ai_gate(signal: Dict[str, Any], strat_id: str, bound_log) -> Dict[str, Any]:
     """
-    Normalize guard_state row into a stable dict with sane defaults.
+    Unified wrapper around trade_classifier + policy threshold.
 
-    Expected DB shape (core/db.py):
+    Returns a dict with at least:
       {
-        "session_date": "YYYY-MM-DD",
-        "session_start_equity": <Decimal/str>,
-        "realized_pnl": <Decimal/str>,
-        "unrealized_pnl": <Decimal/str>,
-        "breaker_on": 0/1/bool,
-        "breaker_reason": str or None,
-        "last_updated_ms": int,
+        "allow": bool,
+        "score": float | None,
+        "reason": str,
+        "features": dict
       }
-    Anything missing is defaulted so callers don't explode.
     """
-    today = _dt.date.today().isoformat()
-
-    if not raw:
+    # 1) Classifier itself
+    try:
+        clf = classify_trade(signal, strat_id)
+    except Exception as e:
+        bound_log.warning(
+            "AI classifier crashed or misbehaved for [%s]: %r — bypassing gate (allow=True).",
+            strat_id,
+            e,
+        )
         return {
-            "session_date": today,
-            "session_start_equity": Decimal("0"),
-            "realized_pnl": Decimal("0"),
-            "unrealized_pnl": Decimal("0"),
-            "breaker_on": False,
-            "breaker_reason": None,
-            "last_updated_ms": 0,
+            "allow": True,
+            "score": None,
+            "reason": f"classifier_error: {e}",
+            "features": {},
         }
 
-    def d(key: str, default: str = "0") -> Decimal:
-        try:
-            return Decimal(str(raw.get(key, default)))
-        except (InvalidOperation, TypeError, ValueError):
-            return Decimal(default)
+    if not isinstance(clf, dict):
+        bound_log.warning(
+            "AI classifier returned non-dict for [%s]: %r — treating as allow=True.",
+            strat_id,
+            clf,
+        )
+        return {
+            "allow": True,
+            "score": None,
+            "reason": "classifier_non_dict",
+            "features": {},
+        }
+
+    allow = bool(clf.get("allow", True))
+    score = clf.get("score")
+    reason = clf.get("reason") or clf.get("why") or "ok"
+    features = clf.get("features") or {}
+
+    # 2) Policy-based min score per strategy
+    min_score = get_min_ai_score(strat_id)
+    score_f: Optional[float]
+    try:
+        score_f = float(score) if score is not None else None
+    except Exception:
+        score_f = None
+
+    if min_score > 0 and score_f is not None and score_f < min_score:
+        bound_log.info(
+            "AI score %.3f < min threshold %.3f for [%s]; rejecting trade.",
+            score_f,
+            min_score,
+            strat_id,
+        )
+        return {
+            "allow": False,
+            "score": score_f,
+            "reason": f"score_below_min ({score_f:.3f} < {min_score:.3f})",
+            "features": features,
+        }
+
+    if not allow:
+        bound_log.info("AI gate rejected [%s]: %s", strat_id, reason)
 
     return {
-        "session_date": str(raw.get("session_date") or today),
-        "session_start_equity": d("session_start_equity", "0"),
-        "realized_pnl": d("realized_pnl", "0"),
-        "unrealized_pnl": d("unrealized_pnl", "0"),
-        "breaker_on": bool(raw.get("breaker_on", False)),
-        "breaker_reason": raw.get("breaker_reason"),
-        "last_updated_ms": int(raw.get("last_updated_ms", 0) or 0),
+        "allow": allow,
+        "score": score_f,
+        "reason": reason,
+        "features": features,
     }
 
 
-def get_state() -> Dict[str, Any]:
-    """
-    Load guard_state from DB and normalize it.
+# ---------- SIGNAL PROCESSOR ---------- #
 
-    Cheap read, safe to call frequently.
-    """
-    raw = guard_load()
-    return _normalize_state(raw)
-
-
-def ensure_today(equity_now_usd: Decimal) -> Dict[str, Any]:
-    """
-    Ensure guard_state is anchored to *today*.
-
-    If session_date != today, performs a guard_reset_day(equity_now_usd)
-    and returns the fresh state. Otherwise, returns the existing state.
-    """
-    state = get_state()
-    today = _dt.date.today().isoformat()
-
-    if state["session_date"] != today:
-        # New session / new day anchor
-        guard_reset_day(equity_now_usd)
-        state = get_state()
-
-    # If we have a zero anchor but non-zero equity, we can lazily backfill.
-    if state["session_start_equity"] <= 0 and equity_now_usd > 0:
-        guard_reset_day(equity_now_usd)
-        state = get_state()
-
-    return state
-
-
-def record_pnl(delta_realized_usd: Decimal,
-               delta_unrealized_usd: Decimal = Decimal("0")) -> None:
-    """
-    Update PnL deltas in DB.
-
-    Typically called by:
-      - Trade journal / execution listener after fills.
-      - A periodic mark-to-market process for unrealized.
-    """
-    guard_update_pnl(delta_realized_usd, delta_unrealized_usd)
-
-
-# --------------------------------------------------------------------------
-# Breaker controls
-# --------------------------------------------------------------------------
-
-def _notify_breaker(msg: str) -> None:
-    if not _CFG.notify_breaker:
+async def process_signal_line(line: str) -> None:
+    try:
+        sig = json.loads(line)
+    except json.JSONDecodeError:
+        log.warning("Invalid JSON in observed.jsonl: %r", line[:200])
         return
-    try:
-        send_tg(f"🛑 Portfolio Breaker | {msg}")
-    except Exception:
-        # No one needs to die over a Telegram outage.
-        pass
 
+    symbol = sig.get("symbol")
+    tf = sig.get("timeframe") or sig.get("tf")
+    if not symbol or not tf:
+        return
 
-def _maybe_guard_set_breaker(on: bool, reason: str) -> None:
-    """
-    Try to persist breaker flag if DB helper exists. Safe fallback if not.
-    """
-    try:
+    # Find strategies that want this signal
+    strategies = get_strategies_for_signal(symbol, tf)
+    if not strategies:
+        return
+
+    for strat_name, strat_cfg in strategies.items():
         try:
-            from core.db import guard_set_breaker  # type: ignore
-        except Exception:
-            from app.core.db import guard_set_breaker  # type: ignore
-        guard_set_breaker(on, reason)
+            await handle_strategy_signal(strat_name, strat_cfg, sig)
+        except Exception as e:
+            log.exception("Strategy error (%s): %r", strat_name, e)
+
+
+# ---------- STRATEGY PROCESSOR ---------- #
+
+def _automation_mode_from_cfg(cfg: Dict[str, Any]) -> str:
+    mode = str(cfg.get("automation_mode", "OFF")).upper().strip()
+    if mode not in ("OFF", "LEARN_DRY", "LIVE_CANARY", "LIVE_FULL"):
+        mode = "OFF"
+    return mode
+
+
+async def handle_strategy_signal(
+    strat_name: str,
+    strat_cfg: Dict[str, Any],
+    sig: Dict[str, Any],
+) -> None:
+    strat_id = strategy_label(strat_cfg)  # e.g. "Sub2_Breakout (sub 524633243)"
+    bound = bind_context(log, strat=strat_id)
+
+    enabled = bool(strat_cfg.get("enabled", False))
+    mode_raw = _automation_mode_from_cfg(strat_cfg)
+
+    if not enabled or mode_raw == "OFF":
+        bound.debug("strategy disabled or automation_mode=OFF")
+        return
+
+    symbol = sig.get("symbol")
+    tf = sig.get("timeframe") or sig.get("tf")
+    side = sig.get("side")
+    price = sig.get("price") or sig.get("last") or sig.get("close")
+    ts = sig.get("ts") or sig.get("timestamp")
+
+    if not symbol or not tf or not side or price is None:
+        bound.warning("missing required fields in signal: %r", sig)
+        return
+
+    try:
+        price_f = float(price)
     except Exception:
-        # If guard_set_breaker doesn't exist yet, skip silently.
-        pass
-
-
-def trip_breaker(reason: str,
-                 meta: Optional[Dict[str, Any]] = None) -> None:
-    """
-    Trip the global breaker for today.
-
-    Reason should be a short human-readable string, e.g.:
-      "Daily loss limit hit: -3.2%"
-      "Risk per trade exceeded"
-    """
-    state = get_state()
-    if state["breaker_on"]:
-        # Already tripped; no need to spam notifications.
+        bound.warning("invalid price in signal: %r", sig)
         return
 
-    msg = reason
-    if meta:
-        # Add a compact meta summary if present.
-        details = ", ".join(f"{k}={v}" for k, v in meta.items())
-        msg = f"{reason} ({details})"
-
-    _notify_breaker(msg)
-    _maybe_guard_set_breaker(True, reason)
-
-
-def clear_breaker(reason: Optional[str] = None) -> None:
-    """
-    Clear the global breaker flag for today (manual override).
-
-    Use this when:
-      - You've reviewed the damage.
-      - You consciously want to re-enable trading.
-    """
-    state = get_state()
-    if not state["breaker_on"]:
-        return
-
-    why = reason or "Manual reset"
-    _notify_breaker(f"Breaker cleared: {why}")
-    _maybe_guard_set_breaker(False, why)
-
-
-# --------------------------------------------------------------------------
-# Risk checks
-# --------------------------------------------------------------------------
-
-def _compute_equity(state: Dict[str, Any],
-                    equity_now_usd: Decimal) -> Tuple[Decimal, Decimal, Decimal]:
-    """
-    Compute:
-      - anchor_equity   (session_start_equity)
-      - current_equity  (equity_now_usd or anchor + pnl)
-      - dd_usd          (drawdown in USD, negative when losing)
-    """
-    anchor = state["session_start_equity"]
-
-    if equity_now_usd > 0:
-        current = equity_now_usd
+    # Normalize mode for feature logging
+    if mode_raw == "LEARN_DRY":
+        trade_mode = "PAPER"
+    elif mode_raw == "LIVE_CANARY":
+        trade_mode = "LIVE_CANARY"
+    elif mode_raw == "LIVE_FULL":
+        trade_mode = "LIVE_FULL"
     else:
-        # Fallback if we aren't passed real-time equity.
-        current = anchor + state["realized_pnl"] + state["unrealized_pnl"]
+        trade_mode = mode_raw
 
-    dd_usd = current - anchor
-    return anchor, current, dd_usd
+    # ---------- AI Classifier + Policy Gate ---------- #
+    ai = run_ai_gate(sig, strat_id, bound)
+    if not ai["allow"]:
+        return
 
+    # ---------- Correlation gate (unpack (allowed, reason)) ---------- #
+    try:
+        allowed_corr, corr_reason = corr_allow(symbol)
+    except Exception as e:
+        bound.warning("Correlation gate error for %s: %r; bypassing.", symbol, e)
+        allowed_corr, corr_reason = True, "corr_gate_v2 exception, bypassed"
 
-def _check_daily_limits(state: Dict[str, Any],
-                        equity_now_usd: Decimal) -> Tuple[bool, Optional[str]]:
-    """
-    Check whether current drawdown exceeds configured daily limits.
+    if not allowed_corr:
+        bound.info("Correlation gate rejected for %s: %s", symbol, corr_reason)
+        return
 
-    Returns (allowed, reason_if_blocked).
-    """
-    anchor, current, dd_usd = _compute_equity(state, equity_now_usd)
+    # ---------- Sizing + Risk Policy ---------- #
+    # Strategy risk (% of equity per trade, or fraction) from YAML
+    try:
+        base_risk_pct = Decimal(str(strategy_risk_pct(strat_cfg)))
+    except Exception:
+        base_risk_pct = Decimal("0")
 
-    if anchor <= 0:
-        # No meaningful anchor yet; allow but don't enforce.
-        return True, None
+    # Policy multiplier per strategy
+    risk_mult = Decimal(str(get_risk_multiplier(strat_id)))
+    eff_risk_pct = base_risk_pct * risk_mult
 
-    # Drawdown is negative when losing
-    if dd_usd >= 0:
-        return True, None
+    if eff_risk_pct <= 0:
+        bound.info("effective risk_pct <= 0 for %s; skipping.", strat_id)
+        return
 
-    loss_usd = -dd_usd
-    loss_pct = (loss_usd / anchor) * Decimal("100")
+    # Fetch current equity (MAIN unified)
+    try:
+        equity_val = Decimal(str(get_equity_usdt()))
+    except Exception as e:
+        bound.warning("get_equity_usdt failed: %r; assuming equity=0.", e)
+        equity_val = Decimal("0")
 
-    # Percent cap
-    if _CFG.max_daily_loss_pct > 0 and loss_pct >= _CFG.max_daily_loss_pct:
-        reason = (
-            f"Daily loss limit hit: {loss_pct:.2f}% "
-            f"(max {_CFG.max_daily_loss_pct}%)"
+    # bayesian_size is assumed to return (notional_usd, stop_distance)
+    try:
+        notional_usd, stop_distance = bayesian_size(
+            symbol=symbol,
+            side=side,
+            price=price_f,
+            strategy_id=strat_id,
         )
-        return False, reason
+    except TypeError:
+        # Backward-compat: older signature bayesian_size(symbol, side, price)
+        notional_usd, stop_distance = bayesian_size(symbol, side, price_f)
 
-    # Absolute cap
-    if _CFG.max_daily_loss_usd > 0 and loss_usd >= _CFG.max_daily_loss_usd:
-        reason = (
-            f"Daily loss USD limit hit: -{loss_usd:.2f} "
-            f"(max {_CFG.max_daily_loss_usd})"
+    try:
+        notional_dec = Decimal(str(notional_usd))
+    except Exception:
+        notional_dec = Decimal("0")
+
+    if notional_dec <= 0:
+        bound.info(
+            "notional_usd <= 0 after bayesian_size for %s; equity=%s risk_pct=%s",
+            strat_id,
+            equity_val,
+            eff_risk_pct,
         )
-        return False, reason
+        return
 
-    return True, None
+    # Risk-capped quantity, using effective risk %
+    try:
+        qty = risk_capped_qty(
+            symbol=symbol,
+            notional_usd=notional_dec,
+            equity_usd=equity_val,
+            max_risk_pct=eff_risk_pct,
+            stop_distance=stop_distance,
+        )
+    except TypeError:
+        # Backward-compat: older signature risk_capped_qty(symbol, raw_qty)
+        qty = risk_capped_qty(symbol, notional_dec)
 
+    try:
+        qty_dec = Decimal(str(qty))
+    except Exception:
+        qty_dec = Decimal("0")
 
-def _check_per_trade_risk(risk_usd: Decimal,
-                          equity_now_usd: Decimal) -> Tuple[bool, Optional[str]]:
-    """
-    Check whether proposed per-trade risk is within configured limits.
-    """
-    if risk_usd <= 0:
-        return True, None
+    if qty_dec <= 0:
+        bound.info(
+            "qty <= 0 after sizing; skipping entry. notional_usd=%s equity=%s risk_pct=%s",
+            notional_dec,
+            equity_val,
+            eff_risk_pct,
+        )
+        return
 
-    # Percent-of-equity cap
-    if _CFG.max_risk_per_trade_pct > 0 and equity_now_usd > 0:
-        pct = (risk_usd / equity_now_usd) * Decimal("100")
-        if pct > _CFG.max_risk_per_trade_pct:
-            reason = (
-                f"Per-trade risk {pct:.2f}% exceeds cap "
-                f"({_CFG.max_risk_per_trade_pct}%)."
+    # Approximate risk in USD (for logging / memory)
+    try:
+        risk_usd = equity_val * eff_risk_pct
+    except Exception:
+        risk_usd = Decimal("0")
+
+    # Identify strategy metadata for guard + logging
+    sub_uid = str(strat_cfg.get("sub_uid") or "")
+    strategy_name_label = strat_cfg.get("name", strat_name)
+
+    # ---------- Portfolio guard (NEW SIGNATURE) ---------- #
+    try:
+        # Preferred: new API with sub_uid + strategy + Decimal risk + Decimal equity
+        guard_ok, guard_reason = can_open_trade(
+            sub_uid=sub_uid,
+            strategy_name=strategy_name_label,
+            risk_usd=risk_usd,
+            equity_now_usd=equity_val,
+        )
+    except TypeError:
+        # Fallback: legacy guard implementations (symbol + float risk, maybe bool)
+        try:
+            legacy_res = can_open_trade(symbol, float(risk_usd))
+            if isinstance(legacy_res, tuple):
+                guard_ok, guard_reason = legacy_res
+            else:
+                guard_ok, guard_reason = bool(legacy_res), "legacy_bool_guard"
+        except Exception as e:
+            bound.warning(
+                "Portfolio guard failed for %s (legacy path): %r; bypassing.",
+                symbol,
+                e,
             )
-            return False, reason
-
-    # Absolute cap
-    if _CFG.max_risk_per_trade_usd > 0 and risk_usd > _CFG.max_risk_per_trade_usd:
-        reason = (
-            f"Per-trade risk {risk_usd:.2f} exceeds absolute cap "
-            f"({_CFG.max_risk_per_trade_usd})."
+            guard_ok, guard_reason = True, "guard_exception_bypass"
+    except Exception as e:
+        bound.warning(
+            "Portfolio guard failed for %s: %r; bypassing.",
+            symbol,
+            e,
         )
-        return False, reason
+        guard_ok, guard_reason = True, "guard_exception_bypass"
 
-    return True, None
+    if not guard_ok:
+        bound.info("Portfolio guard blocked trade for %s: %s", symbol, guard_reason)
+        return
+
+    # ---------- Feature logging (for setup memory) ---------- #
+    try:
+        ai_score = ai.get("score")
+        ai_reason = ai.get("reason", "")
+        features = ai.get("features") or {}
+
+        log_features(
+            sub_uid=sub_uid,
+            strategy=strategy_name_label,
+            strategy_id=strat_id,
+            symbol=symbol,
+            side=side,
+            mode=trade_mode,
+            equity_usd=e
+quity_val,
+            risk_usd=risk_usd,
+            risk_pct=eff_risk_pct,
+            ai_score=float(ai_score) if ai_score is not None else 0.0,
+            ai_reason=str(ai_reason),
+            features=features,
+            signal=sig,
+        )
+    except Exception as e:
+        bound.warning("feature logging failed: %r", e)
+
+    # ---------- Execute or paper log ---------- #
+    if mode_raw in ("LIVE_CANARY", "LIVE_FULL"):
+        await execute_entry(
+            symbol=symbol,
+            side=side,
+            qty=float(qty_dec),
+            price=price_f,
+            strat=strat_id,
+            mode=trade_mode,
+            bound_log=bound,
+        )
+    else:
+        bound.info(
+            "PAPER entry [%s]: %s %s qty=%s @ ~%s (risk_mult=%.2f)",
+            strat_id,
+            symbol,
+            side,
+            qty_dec,
+            price_f,
+            float(risk_mult),
+        )
 
 
-def can_open_trade(sub_uid: str,
-                   strategy_name: str,
-                   risk_usd: Decimal,
-                   equity_now_usd: Decimal) -> Tuple[bool, Optional[str]]:
-    """
-    Main entry point for executor.
+# ---------- EXECUTOR ---------- #
 
-    Returns (allowed, reason_if_blocked).
+async def execute_entry(
+    symbol: str,
+    side: str,
+    qty: float,
+    price: float,
+    strat: str,
+    mode: str,
+    bound_log,
+) -> None:
+    client = get_trade_client()
+    # Unique orderLinkId so journal + setup_memory can join reliably
+    order_link_id = f"{strat}-{int(time.time() * 1000)}"
 
-    Execution flow:
-      1) Ensure we have a session for today: ensure_today(equity_now_usd).
-      2) If breaker_on: block any new trades.
-      3) Check daily loss limits (anchor vs current).
-      4) Check per-trade risk limits.
-    """
-    # 1) Ensure session state for today
-    state = ensure_today(equity_now_usd)
+    try:
+        resp = client.place_order(
+            category="linear",
+            symbol=symbol,
+            side=side,
+            qty=qty,
+            orderType="Market",
+            orderLinkId=order_link_id,
+        )
+        bound_log.info(
+            "LIVE entry executed [%s %s]: %s %s qty=%s resp=%r",
+            mode,
+            strat,
+            symbol,
+            side,
+            qty,
+            resp,
+        )
+        try:
+            tg_send(
+                f"🚀 Entry placed [{mode}/{strat}] {symbol} {side} qty={qty} "
+                f"linkId={order_link_id}"
+            )
+        except Exception as e:
+            bound_log.warning("telegram send failed: %r", e)
+    except Exception as e:
+        bound_log.error(
+            "order failed for %s %s qty=%s (strat=%s): %r",
+            symbol,
+            side,
+            qty,
+            strat,
+            e,
+        )
 
-    # 2) Global breaker switch
-    if state["breaker_on"]:
-        reason = state.get("breaker_reason") or "Global breaker ON"
-        full_reason = f"Breaker ON for {sub_uid}/{strategy_name}: {reason}"
-        return False, full_reason
 
-    # 3) Daily limits
-    ok_daily, reason_daily = _check_daily_limits(state, equity_now_usd)
-    if not ok_daily:
-        meta = {
-            "sub_uid": sub_uid,
-            "strategy": strategy_name,
-        }
-        trip_breaker(reason_daily or "Daily loss limit hit", meta=meta)
-        full_reason = f"{reason_daily} (sub={sub_uid}, strat={strategy_name})"
-        return False, full_reason
+# ---------- MAIN LOOP ---------- #
 
-    # 4) Per-trade limits
-    ok_risk, reason_risk = _check_per_trade_risk(risk_usd, equity_now_usd)
-    if not ok_risk:
-        # We don't necessarily trip the global breaker here, we just block this trade.
-        full_reason = f"{reason_risk} (sub={sub_uid}, strat={strategy_name})"
-        return False, full_reason
+async def executor_loop() -> None:
+    pos = load_cursor()
+    log.info("executor_v2 starting at cursor=%s", pos)
 
-    return True, None
+    while True:
+        try:
+            if not SIGNAL_FILE.exists():
+                await asyncio.sleep(0.5)
+                continue
+
+            # Handle file truncation/rotation: if file shrank, reset cursor
+            file_size = SIGNAL_FILE.stat().st_size
+            if pos > file_size:
+                log.info(
+                    "Signal file truncated (size=%s, cursor=%s). Resetting cursor to 0.",
+                    file_size,
+                    pos,
+                )
+                pos = 0
+                save_cursor(pos)
+
+            # Read in binary mode so tell() is allowed during iteration
+            with SIGNAL_FILE.open("rb") as f:
+                f.seek(pos)
+                for raw in f:
+                    pos = f.tell()
+
+                    try:
+                        line = raw.decode("utf-8").strip()
+                    except Exception as e:
+                        log.warning(
+                            "executor_v2: failed to decode line at pos=%s: %r",
+                            pos,
+                            e,
+                        )
+                        continue
+
+                    if not line:
+                        continue
+
+                    await process_signal_line(line)
+                    save_cursor(pos)
+
+            await asyncio.sleep(0.25)
+
+        except Exception as e:
+            log.exception("executor loop error: %r; backing off 1s", e)
+            await asyncio.sleep(1.0)
+
+
+# ---------- ENTRYPOINT ---------- #
+
+def main() -> None:
+    try:
+        asyncio.run(executor_loop())
+    except KeyboardInterrupt:
+        log.info("executor_v2 stopped by user")
+
+
+if __name__ == "__main__":
+    main()
