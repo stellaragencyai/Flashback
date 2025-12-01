@@ -1,0 +1,33 @@
+# Flashback — Bot Registry
+#
+# Each entry defines a bot module and whether supervisor should manage it.
+
+bots:
+  - name: ws_switchboard
+    module: app.bots.ws_switchboard
+    enabled: true
+
+  - name: tp_sl_manager
+    module: app.bots.tp_sl_manager
+    enabled: true
+
+  - name: trade_journal
+    module: app.bots.trade_journal
+    enabled: true
+
+  - name: executor_v2
+    module: app.bots.executor_v2
+    enabled: true
+
+  - name: equity_drip_bot
+    module: app.bots.equity_drip_bot
+    enabled: true
+
+  - name: sub_exec_notifier
+    module: app.bots.sub_exec_notifier
+    enabled: true
+
+  # add more as needed:
+  # - name: profit_sweeper
+  #   module: app.bots.profit_sweeper
+  #   enabled: false

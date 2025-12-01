@@ -1,0 +1,16 @@
+# config/risk_profiles.yaml
+#
+# Named risk templates referenced by strategies.yaml
+
+profiles:
+  ULTRA_BOOTSTRAP:
+    risk_per_trade_pct: 0.30     # 30% for tiny accounts / Tier 1-3 insanity
+    max_concurrent_risk_pct: 0.90
+
+  STANDARD:
+    risk_per_trade_pct: 0.01     # 1%
+    max_concurrent_risk_pct: 0.06
+
+  CONSERVATIVE:
+    risk_per_trade_pct: 0.005    # 0.5%
+    max_concurrent_risk_pct: 0.03

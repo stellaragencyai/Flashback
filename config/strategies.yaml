@@ -1,0 +1,367 @@
+# config/strategies.yaml
+#
+# Flashback — Strategy Registry (v4, exit profiles + risk_pct)
+#
+# This drives HOW each subaccount trades:
+#   - symbol universe
+#   - timeframes
+#   - risk per trade
+#   - AI profile
+#   - automation mode (OFF / LEARN_DRY / LIVE_CANARY / LIVE_FULL)
+#   - exit_profile for TP/SL manager (standard_5 vs custom)
+
+version: 4
+notes: |
+  v4:
+    - Added explicit risk_pct fields (mirror of risk_per_trade_pct) so
+      strategy_risk_pct() has a clean, future-proof source.
+    - Added exit_profile to all subs:
+        * Standard-5 exits on: Sub1, Sub2, Sub3, Sub7, Sub9
+        * Custom-5 (TBD tuning) on: Sub4, Sub5, Sub6, Sub8, Sub10
+    - All subs remain LEARN_DRY (no live orders) while executor_v2,
+      correlation gate, and setup memory are being validated.
+    - Sub10 remains manual-only (automation OFF).
+
+subaccounts:
+  # --------------------------------------------------------
+  # Sub 1 — Trend-follow (primary clean trend follower)
+  # Broad majors + top L1s/L2s for stable trend data.
+  # --------------------------------------------------------
+  - sub_uid: 524630315
+    name: Sub1_Trend
+    role: trend_follow
+    enabled: true
+    symbols:
+      - BTCUSDT
+      - ETHUSDT
+      - SOLUSDT
+      - XRPUSDT
+      - ADAUSDT
+      - LINKUSDT
+      - INJUSDT
+      - OPUSDT
+      - AVAXUSDT
+      - DOGEUSDT
+    timeframes:
+      - "15"      # 15m trend
+      - "60"      # 1h bias
+    risk_per_trade_pct: 0.10
+    risk_pct: 0.10
+    max_concurrent_positions: 2
+    ai_profile: trend_v1
+    automation_mode: LEARN_DRY
+    exit_profile: "standard_5"
+    notes: |
+      Primary clean trend follower. Sees a broad set of majors
+      and liquid alts so AI can learn trend behaviour across
+      market regimes, but stays LEARN_DRY for now (no live orders).
+
+  # --------------------------------------------------------
+  # Sub 2 — Breakout / Momentum (CANARY)
+  # Big, spicy universe: majors + high-beta alts + your degen toys.
+  # --------------------------------------------------------
+  - sub_uid: 524633243
+    name: Sub2_Breakout
+    role: breakout_momentum
+    enabled: true
+    symbols:
+      - BTCUSDT
+      - ETHUSDT
+      - SOLUSDT
+      - XRPUSDT
+      - ADAUSDT
+      - LINKUSDT
+      - INJUSDT
+      - OPUSDT
+      - AVAXUSDT
+      - DOGEUSDT
+      - MATICUSDT
+      - NEARUSDT
+      - ARBUSDT
+      - HBARUSDT
+      - FARTCOINUSDT
+      - PUMPFUNUSDT
+    timeframes:
+      - "5"       # fast breakout trigger
+      - "15"      # context
+    risk_per_trade_pct: 0.10
+    risk_pct: 0.10
+    max_concurrent_positions: 2
+    ai_profile: breakout_v1
+    automation_mode: LEARN_DRY
+    exit_profile: "standard_5"
+    notes: |
+      Aggressive breakout / momentum hunter with a large basket
+      of majors + volatile alts + your degen favourites.
+      TEMP: LEARN_DRY while executor is validated; later candidate
+      for LIVE_CANARY with guardrails and ~0.20% risk per trade.
+
+  # --------------------------------------------------------
+  # Sub 3 — Intraday scalp (majors + most liquid alts)
+  # High liquidity focus for lower slippage scalps.
+  # --------------------------------------------------------
+  - sub_uid: 524634622
+    name: Sub3_ScalpMajors
+    role: scalp_intraday
+    enabled: true
+    symbols:
+      - BTCUSDT
+      - ETHUSDT
+      - SOLUSDT
+      - XRPUSDT
+      - ADAUSDT
+      - LINKUSDT
+      - DOGEUSDT
+    timeframes:
+      - "1"       # 1m entries
+      - "3"       # micro structure
+      - "5"       # confirmation
+    risk_per_trade_pct: 0.10
+    risk_pct: 0.10
+    max_concurrent_positions: 2
+    ai_profile: scalp_v1
+    automation_mode: LEARN_DRY
+    exit_profile: "standard_5"
+    notes: |
+      Intraday scalps in the most liquid names only, so fills
+      and slippage behave. AI watches a decent universe but no
+      live orders yet.
+
+  # --------------------------------------------------------
+  # Sub 4 — Swing Reversion / Mean Reversion
+  # Majors + big caps, slower timeframes.
+  # --------------------------------------------------------
+  - sub_uid: 524636309
+    name: Sub4_SwingRevert
+    role: swing_reversion
+    enabled: true
+    symbols:
+      - BTCUSDT
+      - ETHUSDT
+      - XRPUSDT
+      - ADAUSDT
+      - LINKUSDT
+      - AVAXUSDT
+      - MATICUSDT
+    timeframes:
+      - "15"
+      - "60"
+      - "240"     # 4h swing
+    risk_per_trade_pct: 0.10
+    risk_pct: 0.10
+    max_concurrent_positions: 2
+    ai_profile: reversion_v1
+    automation_mode: LEARN_DRY
+    exit_profile:
+      name: custom_5_tbd
+      tp_count: 5
+      trailing_sl: true
+    notes: |
+      Fades stretched moves on liquid pairs across 1h/4h.
+      Broader basket for more examples, but still LEARN_DRY.
+      Exit profile marked custom_5_tbd for later tuning.
+
+  # --------------------------------------------------------
+  # Sub 5 — HFT / Market-Maker (flashback05)
+  # Dedicated HFT microstructure engine on BTC/ETH.
+  # --------------------------------------------------------
+  - sub_uid: 524637467
+    name: Sub5_HFT_MM
+    role: hft_market_maker
+    enabled: true
+    symbols:
+      - BTCUSDT
+      - ETHUSDT
+    timeframes:
+      - "1"
+    risk_per_trade_pct: 0.05
+    risk_pct: 0.05
+    max_concurrent_positions: 3
+    ai_profile: hft_mm_v1
+    automation_mode: LEARN_DRY
+    exit_profile:
+      name: custom_5_tbd
+      tp_count: 5
+      trailing_sl: true
+    notes: |
+      Dedicated HFT / microstructure market-making subaccount
+      (flashback05). Quotes around mid on BTC/ETH, inventory-
+      aware and latency-sensitive. For now LEARN_DRY only so we
+      can validate fills, micro-PnL and integration with Portfolio
+      Guard before enabling LIVE_CANARY / LIVE_FULL.
+      Exit profile: custom_5_tbd (will diverge from standard_5 later).
+
+  # --------------------------------------------------------
+  # Sub 6 — Microcap / Speculative (CANARY)
+  # Degen pen: your wildest pairs live, but tightly risk-capped.
+  # --------------------------------------------------------
+  - sub_uid: 524638768
+    name: Sub6_Speculative
+    role: microcap_spec
+    enabled: true
+    symbols:
+      - FARTCOINUSDT
+      - PUMPFUNUSDT
+      - HBARUSDT
+    timeframes:
+      - "1"
+      - "5"
+    risk_per_trade_pct: 0.10
+    risk_pct: 0.10
+    max_concurrent_positions: 1
+    ai_profile: spec_v1
+    automation_mode: LEARN_DRY
+    exit_profile:
+      name: custom_5_tbd
+      tp_count: 5
+      trailing_sl: true
+    notes: |
+      Chaos pen canary. Small universe but very spiky behaviour.
+      TEMP: LEARN_DRY for now; later candidate for LIVE_CANARY
+      with tight global risk controls. Exit profile will need
+      bespoke tuning once live data is collected.
+
+  # --------------------------------------------------------
+  # Sub 7 — Canary / Experimental (CANARY)
+  # Hybrid of majors + top alts to test new models.
+  # --------------------------------------------------------
+  - sub_uid: 524649709
+    name: Sub7_Canary
+    role: canary_experimental
+    enabled: true
+    symbols:
+      - BTCUSDT
+      - ETHUSDT
+      - SOLUSDT
+      - LINKUSDT
+      - INJUSDT
+      - AVAXUSDT
+      - OPUSDT
+    timeframes:
+      - "5"
+      - "15"
+    risk_per_trade_pct: 0.10
+    risk_pct: 0.10
+    max_concurrent_positions: 1
+    ai_profile: canary_v1
+    automation_mode: LEARN_DRY
+    exit_profile: "standard_5"
+    notes: |
+      Experimental canary with a solid mix of majors and
+      strong alts. TEMP: LEARN_DRY while we validate executor
+      and AI gate. Later this becomes the first LIVE_CANARY
+      at ~0.10% risk per trade with standard_5 exits.
+
+  # --------------------------------------------------------
+  # Sub 8 — Swing Multi-Asset
+  # Very broad mix for swing learning (no live yet).
+  # --------------------------------------------------------
+  - sub_uid: 524650929
+    name: Sub8_SwingMulti
+    role: swing_multi
+    enabled: true
+    symbols:
+      - BTCUSDT
+      - ETHUSDT
+      - SOLUSDT
+      - XRPUSDT
+      - ADAUSDT
+      - LINKUSDT
+      - INJUSDT
+      - OPUSDT
+      - AVAXUSDT
+      - MATICUSDT
+      - NEARUSDT
+      - ARBUSDT
+      - HBARUSDT
+    timeframes:
+      - "30"
+      - "240"
+    risk_per_trade_pct: 0.10
+    risk_pct: 0.10
+    max_concurrent_positions: 3
+    ai_profile: swing_v1
+    automation_mode: LEARN_DRY
+    exit_profile:
+      name: custom_5_tbd
+      tp_count: 5
+      trailing_sl: true
+    notes: |
+      Wide multi-asset swing universe; AI can observe trend,
+      mean reversion and volatility cycles across many pairs,
+      but no live trading yet. Exit profile marked custom_5_tbd
+      for later swing-specific ladder rules.
+
+  # --------------------------------------------------------
+  # Sub 9 — Range / Mean-Reversion Intraday
+  # Intraday range-fade on majors + a few high-liquidity alts.
+  # --------------------------------------------------------
+  - sub_uid: 524693375
+    name: Sub9_Range
+    role: range_intraday
+    enabled: true
+    symbols:
+      - BTCUSDT
+      - ETHUSDT
+      - XRPUSDT
+      - ADAUSDT
+      - LINKUSDT
+      - DOGEUSDT
+    timeframes:
+      - "5"
+      - "15"
+    risk_per_trade_pct: 0.10
+    risk_pct: 0.10
+    max_concurrent_positions: 2
+    ai_profile: range_v1
+    automation_mode: LEARN_DRY
+    exit_profile: "standard_5"
+    notes: |
+      Looks for intraday ranges and fade setups in a solid,
+      liquid universe. Good lab for range detection models,
+      but still LEARN_DRY. Uses standard_5 for clean comparative
+      stats vs other intraday subs.
+
+  # --------------------------------------------------------
+  # Sub 10 — Manual / No automation
+  # You do your chaos here by hand.
+  # --------------------------------------------------------
+  - sub_uid: 524700541
+    name: Sub10_ManualOnly
+    role: manual_discretionary
+    enabled: false
+    symbols:
+      - BTCUSDT
+      - ETHUSDT
+      - SOLUSDT
+      - XRPUSDT
+      - ADAUSDT
+      - LINKUSDT
+      - INJUSDT
+      - OPUSDT
+      - AVAXUSDT
+      - DOGEUSDT
+      - MATICUSDT
+      - NEARUSDT
+      - ARBUSDT
+      - HBARUSDT
+      - FARTCOINUSDT
+      - PUMPFUNUSDT
+    timeframes:
+      - "5"
+      - "15"
+    risk_per_trade_pct: 0.00
+    risk_pct: 0.00
+    max_concurrent_positions: 0
+    ai_profile: manual_only
+    automation_mode: OFF
+    exit_profile:
+      name: custom_5_tbd
+      tp_count: 5
+      trailing_sl: true
+    notes: |
+      Reserved for full discretionary control. No auto_executor
+      should place orders here. System may still log/analyze
+      your manual trades later. Exit profile defined only so
+      TP/SL manager has a consistent schema if needed, but
+      automation_mode=OFF means no automatic entries.

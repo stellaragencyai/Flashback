@@ -1,0 +1,45 @@
+# config/exit_profiles.yaml
+#
+# Exit profiles for Flashback TP/SL Manager.
+#
+# Schema expected by core/exit_profiles.py:
+#
+# profiles:
+#   PROFILE_NAME:
+#     tps:
+#       - { rr: <float>, size_pct: <float 0–1> }
+#       ...
+#     sl:
+#       rr: <float>         # negative for normal SL (-1.0 = -1R)
+#
+
+profiles:
+  STANDARD_5:
+    tps:
+      - { rr: 1.0, size_pct: 0.20 }
+      - { rr: 2.0, size_pct: 0.20 }
+      - { rr: 3.0, size_pct: 0.20 }
+      - { rr: 4.0, size_pct: 0.20 }
+      - { rr: 5.0, size_pct: 0.20 }
+    sl:
+      rr: -1.0
+
+  AGGRESSIVE_7:
+    tps:
+      - { rr: 0.75, size_pct: 0.20 }
+      - { rr: 1.5,  size_pct: 0.15 }
+      - { rr: 2.5,  size_pct: 0.15 }
+      - { rr: 3.5,  size_pct: 0.15 }
+      - { rr: 4.5,  size_pct: 0.15 }
+      - { rr: 5.5,  size_pct: 0.10 }
+      - { rr: 6.5,  size_pct: 0.10 }
+    sl:
+      rr: -1.0
+
+  SCALP_3:
+    tps:
+      - { rr: 0.75, size_pct: 0.40 }
+      - { rr: 1.5,  size_pct: 0.35 }
+      - { rr: 2.5,  size_pct: 0.25 }
+    sl:
+      rr: -1.0
