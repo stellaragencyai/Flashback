@@ -51,7 +51,7 @@ try:
     import websocket  # type: ignore
 except ImportError:
     websocket = None
-
+ 
 # Strategy registry (for per-sub exit profiles)
 try:
     from app.core import strategies as strat_mod  # expects get_strategy_for_sub(sub_uid)
